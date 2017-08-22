@@ -59,8 +59,8 @@ def _log_matrix(x, xp, zero_padding):
 	return res.astype(np.float32)
 
 def _eye(N, k, xp, dtype):
-	ret = 0
-	for diagonal in k:
+	ret = xp.eye(N, k=k[-1], dtype=dtype)
+	for diagonal in k[:-1]:
 		ret += xp.eye(N, k=diagonal, dtype=dtype)
 	return ret
 
@@ -68,48 +68,42 @@ def _eye(N, k, xp, dtype):
 def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
 	batchsize, length_u = unigram_label.shape
 	length_b = bigram_label.shape[1]
-	print(path_length, max_length)
+	N = max_length
 
-	repeat_mask_u = xp.ones((batchsize, length_u * 2 + 1))
-	repeat_mask_u[:, 1::2] = unigram_label != xp.roll(unigram_label, 1, axis=1)
+	repeat_mask_u = xp.ones((batchsize, max_length))
+	repeat_mask_u[:, 0::3] = unigram_label != xp.roll(unigram_label, 1, axis=1)
 	repeat_mask_u[:, 1] = 1
-	print(repeat_mask_u)
 
 	max_length_u = length_u * 2 + 1
 	relation_mat_u = (
-		xp.eye(max_length_u, dtype=dtype)[None, :] +
-		xp.eye(max_length_u, k=1, dtype=dtype)[None, :] +
-		xp.eye(max_length_u, k=2, dtype=dtype) * (xp.arange(max_length_u, dtype=dtype) % dtype(2))[None, :] * repeat_mask_u[:, None]
+		xp.eye(max_length, dtype=dtype)[None, :] +
+		xp.eye(max_length, k=1, dtype=dtype)[None, :] +
+		xp.eye(max_length, k=2, dtype=dtype) * (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :] * repeat_mask_u[:, None]
 	)
 
-	print(relation_mat_u)
+	repeat_mask = xp.ones((batchsize, N))
+	repeat_mask[:, 0::3] = unigram_label != xp.roll(unigram_label, 1, axis=1)
+	repeat_mask[:, 0] = 1
+	print(repeat_mask)
+	repeat_mask = repeat_mask[:, None]
+	print(repeat_mask)
+	print(xp.roll(repeat_mask, 4, axis=2))
 
-	eye12 = xp.eye(max_length, k=1, dtype=dtype) + xp.eye(max_length, k=2, dtype=dtype)
-	eye3 = xp.eye(max_length, k=3, dtype=dtype)
-	eye567 = xp.eye(max_length, k=5, dtype=dtype) + xp.eye(max_length, k=6, dtype=dtype) + xp.eye(max_length, k=7, dtype=dtype)
 	relation_mat = (
-		xp.eye(max_length, dtype=dtype)[None, :] +
-		_eye(max_length, (1, 2), xp, dtype)[None, :] 	* (xp.arange(-1, max_length - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
-		_eye(max_length, (3,), xp, dtype)[None, :] 		* (xp.arange(max_length, dtype=dtype) % dtype(3) == 0) + 
-		_eye(max_length, (5, 6, 7), xp, dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1)
+		_eye(N, (0,),	xp, dtype)[None, :] +
+		_eye(N, (1,), 	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
+		_eye(N, (2,),	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) * repeat_mask +
+		_eye(N, (3,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 0) * repeat_mask +
+		_eye(N, (5,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) + 
+		_eye(N, (6, 7), xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) * xp.roll(repeat_mask, 4, axis=2)
 	)
-	relation_mat2 = (
-		xp.eye(max_length, dtype=dtype)[None, :] +
-		xp.eye(max_length, k=1, dtype=dtype)[None, :] * (xp.arange(-1, max_length - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
-		xp.eye(max_length, k=2, dtype=dtype)[None, :] * (xp.arange(-1, max_length - 1, dtype=dtype) % dtype(3)).astype(np.bool) + 
-		xp.eye(max_length, k=3, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 0) + 
-		xp.eye(max_length, k=5, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1) +
-		xp.eye(max_length, k=6, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1) +
-		xp.eye(max_length, k=7, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1)
-	)
-	print(xp.eye(max_length, k=7, dtype=dtype)[None, :])
-	print((xp.arange(max_length, dtype=dtype) % dtype(3) == 1))
-	print(xp.eye(max_length, k=7, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1))
+
 	relation_mat[:, 0, 1] = 1
 	relation_mat[:, 0, 2] = 0
 	relation_mat[:, 0, 3] = 0
 	relation_mat[:, 0, 4] = 1
 	relation_mat[:, 0, 7] = 0
+
 	print(relation_mat)
 	print(relation_mat.swapaxes(1, 2))
 
