@@ -58,29 +58,67 @@ def _log_matrix(x, xp, zero_padding):
 		res = filled(x, zero_padding)
 	return res.astype(np.float32)
 
+def _eye(N, k, xp, dtype):
+	ret = 0
+	for diagonal in k:
+		ret += xp.eye(N, k=diagonal, dtype=dtype)
+	return ret
+
 # ノードの接続関係を表す行列を作る
 def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
 	batchsize, length_u = unigram_label.shape
 	length_b = bigram_label.shape[1]
 	print(path_length, max_length)
-	# repeat_mask_u = xp.ones((batchsize, length_u * 2 + 1))
-	# repeat_mask_u[:, 1::2] = (unigram_label !=
-	# 						xp.take(unigram_label, xp.arange(-1, length_u - 1)
-	# 								% length_u + xp.arange(0, batchsize * length_u,
-	# 												  length_u)[:, None]))
 
-	# unigramのラベル列について同一のラベルが連続する部分を0で埋める
 	repeat_mask_u = xp.ones((batchsize, length_u * 2 + 1))
 	repeat_mask_u[:, 1::2] = unigram_label != xp.roll(unigram_label, 1, axis=1)
-	repeat_mask_u[:, 1] = 1	# ラベル列の先頭と末尾が同じ場合（例えば[1, 2, 3, 1]）、0がセットされてしまうので上書き
+	repeat_mask_u[:, 1] = 1
 	print(repeat_mask_u)
 
-	rr = (xp.eye(max_length, dtype=dtype)[None, :] +
-		  xp.eye(max_length, k=1, dtype=dtype)[None, :] +
-		  (xp.eye(max_length, k=2, dtype=dtype) *
-		   (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :]
-		   * repeat_mask[:, None]))
-	return _log_matrix(rr * (path_length[:, None] > xp.arange(max_length))[..., None], xp, zero_padding=zero_padding)
+	max_length_u = length_u * 2 + 1
+	relation_mat_u = (
+		xp.eye(max_length_u, dtype=dtype)[None, :] +
+		xp.eye(max_length_u, k=1, dtype=dtype)[None, :] +
+		xp.eye(max_length_u, k=2, dtype=dtype) * (xp.arange(max_length_u, dtype=dtype) % dtype(2))[None, :] * repeat_mask_u[:, None]
+	)
+
+	print(relation_mat_u)
+
+	eye12 = xp.eye(max_length, k=1, dtype=dtype) + xp.eye(max_length, k=2, dtype=dtype)
+	eye3 = xp.eye(max_length, k=3, dtype=dtype)
+	eye567 = xp.eye(max_length, k=5, dtype=dtype) + xp.eye(max_length, k=6, dtype=dtype) + xp.eye(max_length, k=7, dtype=dtype)
+	relation_mat = (
+		xp.eye(max_length, dtype=dtype)[None, :] +
+		_eye(max_length, (1, 2), xp, dtype)[None, :] 	* (xp.arange(-1, max_length - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
+		_eye(max_length, (3,), xp, dtype)[None, :] 		* (xp.arange(max_length, dtype=dtype) % dtype(3) == 0) + 
+		_eye(max_length, (5, 6, 7), xp, dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1)
+	)
+	relation_mat2 = (
+		xp.eye(max_length, dtype=dtype)[None, :] +
+		xp.eye(max_length, k=1, dtype=dtype)[None, :] * (xp.arange(-1, max_length - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
+		xp.eye(max_length, k=2, dtype=dtype)[None, :] * (xp.arange(-1, max_length - 1, dtype=dtype) % dtype(3)).astype(np.bool) + 
+		xp.eye(max_length, k=3, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 0) + 
+		xp.eye(max_length, k=5, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1) +
+		xp.eye(max_length, k=6, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1) +
+		xp.eye(max_length, k=7, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1)
+	)
+	print(xp.eye(max_length, k=7, dtype=dtype)[None, :])
+	print((xp.arange(max_length, dtype=dtype) % dtype(3) == 1))
+	print(xp.eye(max_length, k=7, dtype=dtype)[None, :] * (xp.arange(max_length, dtype=dtype) % dtype(3) == 1))
+	relation_mat[:, 0, 1] = 1
+	relation_mat[:, 0, 2] = 0
+	relation_mat[:, 0, 3] = 0
+	relation_mat[:, 0, 4] = 1
+	relation_mat[:, 0, 7] = 0
+	print(relation_mat)
+	print(relation_mat.swapaxes(1, 2))
+
+
+	relation_mat_b = xp.zeros((batchsize, max_length, max_length), dtype=dtype)
+	indices = xp.mod(xp.arange(relation_mat_b.shape[1]), 3) != 1
+	relation_mat_b[:, xp.mod(xp.arange(relation_mat_b.shape[1]), 3) != 1, :] = relation_mat_u[:, 1:, :]
+
+	return _log_matrix(relation_mat_u * (path_length[:, None] > xp.arange(max_length_u))[..., None], xp, zero_padding=zero_padding)
 
 class BigramConnectionistTemporalClassification(function.Function):
 

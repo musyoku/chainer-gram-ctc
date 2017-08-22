@@ -42,7 +42,6 @@ def b():
 	path_length = unigram_length * 2 + 1 + bigram_length
 
 	relation_mat = gram_ctc._create_recurrence_relation_matrix(unigram_labels, bigram_labels, path_length, path.shape[1], np.float32, np, zero_padding=-5)
-	print(relation_mat)
 
 if __name__ == "__main__":
 	a()
