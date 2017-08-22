@@ -24,7 +24,7 @@ def a():
 
 def b():
 	unigram_labels = np.asarray([
-		[2, 2, 2, 2, 2],
+		[1, 2, 2, 3, 5],
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	bigram_labels = np.asarray([

@@ -70,24 +70,10 @@ def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length,
 	length_b = bigram_label.shape[1]
 	N = max_length
 
-	repeat_mask_u = xp.ones((batchsize, max_length))
-	repeat_mask_u[:, 0::3] = unigram_label != xp.roll(unigram_label, 1, axis=1)
-	repeat_mask_u[:, 1] = 1
-
-	max_length_u = length_u * 2 + 1
-	relation_mat_u = (
-		xp.eye(max_length, dtype=dtype)[None, :] +
-		xp.eye(max_length, k=1, dtype=dtype)[None, :] +
-		xp.eye(max_length, k=2, dtype=dtype) * (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :] * repeat_mask_u[:, None]
-	)
-
 	repeat_mask = xp.ones((batchsize, N))
 	repeat_mask[:, 0::3] = unigram_label != xp.roll(unigram_label, 1, axis=1)
 	repeat_mask[:, 0] = 1
-	print(repeat_mask)
 	repeat_mask = repeat_mask[:, None]
-	print(repeat_mask)
-	print(xp.roll(repeat_mask, 4, axis=2))
 
 	relation_mat = (
 		_eye(N, (0,),	xp, dtype)[None, :] +
@@ -104,15 +90,20 @@ def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length,
 	relation_mat[:, 0, 4] = 1
 	relation_mat[:, 0, 7] = 0
 
+	# パスの長さを超える部分は0埋め
+	relation_mat = relation_mat * (path_length[:, None] > xp.arange(max_length))[..., None]
+	relation_mat = relation_mat * (path_length[:, None] > xp.arange(max_length))[:, None, :]
+
+
+	# bigramが存在しない場合、そのノードへの接続を全て切る
+	ignore_mask = xp.ones((batchsize, N))
+	ignore_mask[:, 4::3] = bigram_label != -1
+	relation_mat *= ignore_mask[:, None, :]
+
 	print(relation_mat)
 	print(relation_mat.swapaxes(1, 2))
 
-
-	relation_mat_b = xp.zeros((batchsize, max_length, max_length), dtype=dtype)
-	indices = xp.mod(xp.arange(relation_mat_b.shape[1]), 3) != 1
-	relation_mat_b[:, xp.mod(xp.arange(relation_mat_b.shape[1]), 3) != 1, :] = relation_mat_u[:, 1:, :]
-
-	return _log_matrix(relation_mat_u * (path_length[:, None] > xp.arange(max_length_u))[..., None], xp, zero_padding=zero_padding)
+	return _log_matrix(relation_mat, xp, zero_padding=zero_padding)
 
 class BigramConnectionistTemporalClassification(function.Function):
 

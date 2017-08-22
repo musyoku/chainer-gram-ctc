@@ -95,7 +95,6 @@ class ConnectionistTemporalClassification(function.Function):
         return res.astype(numpy.float32)
 
     def recurrence_relation(self, label, path_length, max_length, dtype, xp):
-        print(path_length, max_length)
         """Transition in forword and backword algorithms is represented as matrix.
 
         See also
