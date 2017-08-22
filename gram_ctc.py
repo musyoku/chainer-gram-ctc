@@ -104,6 +104,45 @@ def _create_connection_matrix(unigram_label, bigram_label, path_length, max_leng
 
 	return _log_matrix(relation_mat, xp, zero_padding=zero_padding)
 
+def _compute_transition_probability(self, yseq, input_length, label, label_length, path, path_length, xp):
+	dtype = np.float32
+	forward_prob = _log_matrix(xp.eye(path.shape[1], dtype=dtype)[0], xp)[None, :]
+	backward_prob = forward_prob
+	offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
+
+	# prob[i] := forward[i] + backward[-i-1]
+	index = offset + path
+	forward_connection = _create_connection_matrix(label, path_length, path.shape[1], dtype, xp)
+	prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
+
+	# forward computation.
+	for i, y in enumerate(yseq):
+		# calc forward probability in log scale
+		forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], forward_connection, xp)
+		prob[i] = forward_prob
+	r_index = offset + _move_label_to_back(path, path_length, xp)
+
+	# rotate yseq with path_length
+	yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
+	brr = _create_connection_matrix(_move_label_to_back(label, label_length, xp), path_length, path.shape[1], dtype, xp)
+	# move to back.
+	prob = _move_inputs(prob, input_length, xp)
+
+	# backward computation.
+	ps1 = path.shape[1]
+	backward_prob_index = (
+		xp.arange(0, path.size, ps1, dtype=np.int32)[:, None] +
+		(xp.arange(ps1) - path_length[:, None]) % ps1)
+	for i, y_inv in enumerate(yseq_inv):
+		# calc backward probability
+		backward_prob = _log_dot(backward_prob[:, None, :], brr, xp)
+		prob[-i - 1] += xp.take(
+			backward_prob[:, ::-1], backward_prob_index)
+		backward_prob = xp.take(y_inv, r_index) + backward_prob
+
+	# move to front.
+	return _move_inputs(prob, -self.input_length, xp)
+
 class GramCTC(function.Function):
 
 	def __init__(self, blank_symbol, reduce='mean'):
@@ -172,45 +211,6 @@ class GramCTC(function.Function):
 										  path.shape[1], ret[i])
 		return ret
 
-	def calc_trans(self, yseq, input_length, label, label_length, path, path_length, xp):
-		dtype = np.float32
-		forward_prob = _log_matrix(xp.eye(path.shape[1], dtype=dtype)[0], xp)[None, :]
-		backward_prob = forward_prob
-		offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
-
-		# prob[i] := forward[i] + backward[-i-1]
-		index = offset + path
-		forward_connection = _create_connection_matrix(label, path_length, path.shape[1], dtype, xp)
-		prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
-
-		# forward computation.
-		for i, y in enumerate(yseq):
-			# calc forward probability in log scale
-			forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], forward_connection, xp)
-			prob[i] = forward_prob
-		r_index = offset + _move_label_to_back(path, path_length, xp)
-
-		# rotate yseq with path_length
-		yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
-		brr = _create_connection_matrix(_move_label_to_back(label, label_length, xp), path_length, path.shape[1], dtype, xp)
-		# move to back.
-		prob = _move_inputs(prob, input_length, xp)
-
-		# backward computation.
-		ps1 = path.shape[1]
-		backward_prob_index = (
-			xp.arange(0, path.size, ps1, dtype=np.int32)[:, None] +
-			(xp.arange(ps1) - path_length[:, None]) % ps1)
-		for i, y_inv in enumerate(yseq_inv):
-			# calc backward probability
-			backward_prob = _log_dot(backward_prob[:, None, :], brr, xp)
-			prob[-i - 1] += xp.take(
-				backward_prob[:, ::-1], backward_prob_index)
-			backward_prob = xp.take(y_inv, r_index) + backward_prob
-
-		# move to front.
-		return _move_inputs(prob, -self.input_length, xp)
-
 	def forward(self, inputs):
 		xp = cuda.get_array_module(inputs[0])
 		self.input_length = inputs[0]
@@ -234,9 +234,7 @@ class GramCTC(function.Function):
 		self.yseq = _softmax(xp.vstack(xs).reshape(yseq_shape), xp)
 		log_yseq = _log_matrix(self.yseq, xp)
 		self.path = _label_to_path(t, self.blank_symbol, xp)
-		self.prob_trans = self.calc_trans(
-			log_yseq, self.input_length, t,
-			label_length, self.path, self.path_length, xp)
+		self.prob_trans = _compute_transition_probability(log_yseq, self.input_length, t, label_length, self.path, self.path_length, xp)
 
 		loss = -_logsumexp(self.prob_trans[0], xp, axis=1)
 		if self.reduce == 'mean':
