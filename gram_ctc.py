@@ -1,3 +1,4 @@
+# coding: utf-8
 import collections
 import numpy as np
 import six
@@ -20,8 +21,15 @@ def _softmax(x, xp):
 	return val
 
 def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
-	path = xp.full((len(labels), labels.shape[1] * 2 + 1), blank_symbol, dtype=np.int32)
-	path[:, 1::2] = labels
+	batchsize = len(unigram_labels)
+	unigram_length = unigram_labels.shape[1]
+	bigram_length = bigram_labels.shape[1]
+	path = xp.full((batchsize, unigram_length * 2 + 1 + bigram_length), blank_symbol, dtype=np.int32)
+	# unigram
+	path[:, 3::3] = unigram_labels[:, 1:]
+	path[:, 1] = unigram_labels[:, 0]
+	# bigram
+	path[:, 4::3] = bigram_labels
 	return path
 
 def _log_dot(prob, rr, xp):
@@ -50,14 +58,23 @@ def _log_matrix(x, xp, zero_padding):
 		res = filled(x, zero_padding)
 	return res.astype(np.float32)
 
-def _create_recurrence_relation_matrix(label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
-	batch, lab = label.shape
-	repeat_mask = xp.ones((batch, lab * 2 + 1))
-	repeat_mask[:, 1::2] = (label !=
-							xp.take(label, xp.arange(-1, lab - 1)
-									% lab + xp.arange(0, batch * lab,
-													  lab)[:, None]))
-	repeat_mask[:, 1] = 1
+# ノードの接続関係を表す行列を作る
+def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
+	batchsize, length_u = unigram_label.shape
+	length_b = bigram_label.shape[1]
+	print(path_length, max_length)
+	# repeat_mask_u = xp.ones((batchsize, length_u * 2 + 1))
+	# repeat_mask_u[:, 1::2] = (unigram_label !=
+	# 						xp.take(unigram_label, xp.arange(-1, length_u - 1)
+	# 								% length_u + xp.arange(0, batchsize * length_u,
+	# 												  length_u)[:, None]))
+
+	# unigramのラベル列について同一のラベルが連続する部分を0で埋める
+	repeat_mask_u = xp.ones((batchsize, length_u * 2 + 1))
+	repeat_mask_u[:, 1::2] = unigram_label != xp.roll(unigram_label, 1, axis=1)
+	repeat_mask_u[:, 1] = 1	# ラベル列の先頭と末尾が同じ場合（例えば[1, 2, 3, 1]）、0がセットされてしまうので上書き
+	print(repeat_mask_u)
+
 	rr = (xp.eye(max_length, dtype=dtype)[None, :] +
 		  xp.eye(max_length, k=1, dtype=dtype)[None, :] +
 		  (xp.eye(max_length, k=2, dtype=dtype) *
