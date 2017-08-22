@@ -65,7 +65,7 @@ def _eye(N, k, xp, dtype):
 	return ret
 
 # ノードの接続関係を表す行列を作る
-def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
+def _create_connection_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
 	batchsize, length_u = unigram_label.shape
 	length_b = bigram_label.shape[1]
 	N = max_length
@@ -94,7 +94,6 @@ def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length,
 	relation_mat = relation_mat * (path_length[:, None] > xp.arange(max_length))[..., None]
 	relation_mat = relation_mat * (path_length[:, None] > xp.arange(max_length))[:, None, :]
 
-
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
 	ignore_mask[:, 4::3] = bigram_label != -1
@@ -105,7 +104,7 @@ def _create_recurrence_relation_matrix(unigram_label, bigram_label, path_length,
 
 	return _log_matrix(relation_mat, xp, zero_padding=zero_padding)
 
-class BigramConnectionistTemporalClassification(function.Function):
+class GramCTC(function.Function):
 
 	def __init__(self, blank_symbol, reduce='mean'):
 		self.blank_symbol = blank_symbol
@@ -131,34 +130,8 @@ class BigramConnectionistTemporalClassification(function.Function):
 				x_type.shape == x_basetype.shape,
 			)
 
-	def log_matrix(self, x, xp):
-		if xp == np:
-			res = np.ma.log(x).filled(fill_value=self.zero_padding)
-		else:
-			create_recurrence_relation = cuda.cupy.ElementwiseKernel(
-				'T x, T e', 'T y',
-				'y = x == 0 ? e : log(x)',
-				'create_recurrence_relation')
-			res = create_recurrence_relation(x, self.zero_padding)
-		return res.astype(np.float32)
-
-	def recurrence_relation(self, label, path_length, max_length, dtype, xp):
-		batch, lab = label.shape
-		repeat_mask = xp.ones((batch, lab * 2 + 1))
-		repeat_mask[:, 1::2] = (label !=
-								xp.take(label, xp.arange(-1, lab - 1)
-										% lab + xp.arange(0, batch * lab,
-														  lab)[:, None]))
-		repeat_mask[:, 1] = 1
-		rr = (xp.eye(max_length, dtype=dtype)[None, :] +
-			  xp.eye(max_length, k=1, dtype=dtype)[None, :] +
-			  (xp.eye(max_length, k=2, dtype=dtype) *
-			   (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :]
-			   * repeat_mask[:, None]))
-		return self.log_matrix(rr * (path_length[:, None] > xp.arange(max_length))[..., None], xp)
-
 	def label_probability(self, label_size, path, path_length, multiply_seq, xp):
-		labels_prob = self.log_matrix(xp.zeros((len(path), label_size),
+		labels_prob = _log_matrix(xp.zeros((len(path), label_size),
 											   dtype=multiply_seq.dtype), xp)
 		ret = xp.empty(
 			(len(multiply_seq),) + labels_prob.shape, dtype=labels_prob.dtype)
@@ -199,33 +172,27 @@ class BigramConnectionistTemporalClassification(function.Function):
 										  path.shape[1], ret[i])
 		return ret
 
-	def calc_trans(self, yseq, input_length,
-				   label, label_length, path, path_length, xp):
-		forward_prob = self.log_matrix(
-			xp.eye(path.shape[1], dtype='f')[0], xp)[None, :]
+	def calc_trans(self, yseq, input_length, label, label_length, path, path_length, xp):
+		dtype = np.float32
+		forward_prob = _log_matrix(xp.eye(path.shape[1], dtype=dtype)[0], xp)[None, :]
 		backward_prob = forward_prob
-		offset = xp.arange(
-			0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
+		offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
 
 		# prob[i] := forward[i] + backward[-i-1]
 		index = offset + path
-		frr = self.recurrence_relation(
-			label, path_length, path.shape[1], np.float32, xp)
-		prob = xp.empty(
-			(len(yseq),) + index.shape, dtype=forward_prob.dtype)
+		forward_connection = _create_connection_matrix(label, path_length, path.shape[1], dtype, xp)
+		prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
+
 		# forward computation.
 		for i, y in enumerate(yseq):
 			# calc forward probability in log scale
-			forward_prob = xp.take(y, index) + _log_dot(
-				forward_prob[:, None, :], frr, xp)
+			forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], forward_connection, xp)
 			prob[i] = forward_prob
 		r_index = offset + _move_label_to_back(path, path_length, xp)
 
 		# rotate yseq with path_length
 		yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
-		brr = self.recurrence_relation(
-			_move_label_to_back(label, label_length, xp),
-			path_length, path.shape[1], np.float32, xp)
+		brr = _create_connection_matrix(_move_label_to_back(label, label_length, xp), path_length, path.shape[1], dtype, xp)
 		# move to back.
 		prob = _move_inputs(prob, input_length, xp)
 
@@ -252,12 +219,12 @@ class BigramConnectionistTemporalClassification(function.Function):
 		xs = inputs[3:]
 
 		if chainer.is_debug():
-			# Batch size check.
+			# batch size check.
 			assert len(xs[0]) == len(t)
 			assert len(xs[0]) == len(self.input_length)
 			assert len(xs[0]) == len(label_length)
 
-			# Length check.
+			# length check.
 			assert len(xs) >= xp.max(self.input_length)
 			assert len(t[0]) >= xp.max(label_length)
 
@@ -265,7 +232,7 @@ class BigramConnectionistTemporalClassification(function.Function):
 
 		yseq_shape = (len(xs),) + xs[0].shape
 		self.yseq = _softmax(xp.vstack(xs).reshape(yseq_shape), xp)
-		log_yseq = self.log_matrix(self.yseq, xp)
+		log_yseq = _log_matrix(self.yseq, xp)
 		self.path = _label_to_path(t, self.blank_symbol, xp)
 		self.prob_trans = self.calc_trans(
 			log_yseq, self.input_length, t,
@@ -309,4 +276,4 @@ def bigram_connectionist_temporal_classification(x, t, blank_symbol, input_lengt
 		input_length = variable.Variable(xp.full((len(x[0].data),), len(x), dtype=np.int32))
 		label_length = variable.Variable(xp.full((len(t.data),), len(t.data[0]), dtype=np.int32))
 
-	return BigramConnectionistTemporalClassification(blank_symbol, reduce)(input_length, label_length, t, *x)
+	return GramCTC(blank_symbol, reduce)(input_length, label_length, t, *x)
