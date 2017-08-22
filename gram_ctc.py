@@ -1,5 +1,5 @@
 import collections
-import numpy
+import numpy as np
 import six
 
 import chainer
@@ -14,29 +14,24 @@ def _logsumexp(a, xp, axis=None):
 	vmax += xp.log(xp.sum(xp.exp(a - vmax), axis=axis, keepdims=True, dtype=a.dtype))
 	return xp.squeeze(vmax, axis=axis)
 
-
 def _softmax(x, xp):
 	val = xp.exp(x - xp.amax(x, axis=2, keepdims=True))
 	val /= xp.sum(val, axis=2, keepdims=True)
 	return val
 
-
-def _label_to_path(labels, blank_symbol, xp):
-	path = xp.full((len(labels), labels.shape[1] * 2 + 1), blank_symbol, dtype=numpy.int32)
+def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
+	path = xp.full((len(labels), labels.shape[1] * 2 + 1), blank_symbol, dtype=np.int32)
 	path[:, 1::2] = labels
 	return path
-
 
 def _log_dot(prob, rr, xp):
 	return _logsumexp(prob + xp.swapaxes(rr, 1, 2), xp, axis=2)
 
-
 def _move_label_to_back(path, path_length, xp):
 	s1 = path.shape[1]  # TODO(okuta): Change name
-	index = (xp.arange(0, path.size, s1, dtype=numpy.int32)[:, None] +
+	index = (xp.arange(0, path.size, s1, dtype=np.int32)[:, None] +
 			 (xp.arange(s1) + path_length[:, None])[:, ::-1] % s1)
 	return xp.take(path, index)
-
 
 def _move_inputs(prob, input_length, xp):
 	seq, batch, ch = prob.shape
@@ -44,6 +39,31 @@ def _move_inputs(prob, input_length, xp):
 	index = rotate * batch + xp.arange(batch)
 	return xp.take(prob.reshape(seq * batch, ch), index, axis=0)
 
+def _log_matrix(x, xp, zero_padding):
+	if xp == np:
+		res = np.ma.log(x).filled(fill_value=zero_padding)
+	else:
+		filled = cuda.cupy.ElementwiseKernel(
+			'T x, T e', 'T y',
+			'y = x == 0 ? e : log(x)',
+			'_log_matrix')
+		res = filled(x, zero_padding)
+	return res.astype(np.float32)
+
+def _create_recurrence_relation_matrix(label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
+	batch, lab = label.shape
+	repeat_mask = xp.ones((batch, lab * 2 + 1))
+	repeat_mask[:, 1::2] = (label !=
+							xp.take(label, xp.arange(-1, lab - 1)
+									% lab + xp.arange(0, batch * lab,
+													  lab)[:, None]))
+	repeat_mask[:, 1] = 1
+	rr = (xp.eye(max_length, dtype=dtype)[None, :] +
+		  xp.eye(max_length, k=1, dtype=dtype)[None, :] +
+		  (xp.eye(max_length, k=2, dtype=dtype) *
+		   (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :]
+		   * repeat_mask[:, None]))
+	return _log_matrix(rr * (path_length[:, None] > xp.arange(max_length))[..., None], xp, zero_padding=zero_padding)
 
 class BigramConnectionistTemporalClassification(function.Function):
 
@@ -60,27 +80,27 @@ class BigramConnectionistTemporalClassification(function.Function):
 	def check_type_forward(self, in_types):
 		type_check.expect(in_types.size() > 3)  # TODO(okuta): > 3?
 		l_type = in_types[2]
-		type_check.expect(l_type.dtype == numpy.int32)
+		type_check.expect(l_type.dtype == np.int32)
 
 		x_basetype = in_types[3]  # TODO(oktua): Check x_basetype size
 
 		for i in six.moves.range(3, len(in_types)):
 			x_type = in_types[i]
 			type_check.expect(
-				x_type.dtype == numpy.float32,
+				x_type.dtype == np.float32,
 				x_type.shape == x_basetype.shape,
 			)
 
 	def log_matrix(self, x, xp):
-		if xp == numpy:
-			res = numpy.ma.log(x).filled(fill_value=self.zero_padding)
+		if xp == np:
+			res = np.ma.log(x).filled(fill_value=self.zero_padding)
 		else:
 			create_recurrence_relation = cuda.cupy.ElementwiseKernel(
 				'T x, T e', 'T y',
 				'y = x == 0 ? e : log(x)',
 				'create_recurrence_relation')
 			res = create_recurrence_relation(x, self.zero_padding)
-		return res.astype(numpy.float32)
+		return res.astype(np.float32)
 
 	def recurrence_relation(self, label, path_length, max_length, dtype, xp):
 		batch, lab = label.shape
@@ -95,8 +115,7 @@ class BigramConnectionistTemporalClassification(function.Function):
 			  (xp.eye(max_length, k=2, dtype=dtype) *
 			   (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :]
 			   * repeat_mask[:, None]))
-		return self.log_matrix(
-			rr * (path_length[:, None] > xp.arange(max_length))[..., None], xp)
+		return self.log_matrix(rr * (path_length[:, None] > xp.arange(max_length))[..., None], xp)
 
 	def label_probability(self, label_size, path, path_length, multiply_seq, xp):
 		labels_prob = self.log_matrix(xp.zeros((len(path), label_size),
@@ -104,14 +123,14 @@ class BigramConnectionistTemporalClassification(function.Function):
 		ret = xp.empty(
 			(len(multiply_seq),) + labels_prob.shape, dtype=labels_prob.dtype)
 		ret[...] = labels_prob
-		if xp == numpy:
+		if xp == np:
 			for b in six.moves.range(len(path)):
 				target_path = path[b][0:path_length[b]]
 				chars = {c for c in target_path}
 				for c in chars:
 					ret[:, b, c] = _logsumexp(
 						multiply_seq[:, b, 0:path_length[b]]
-						[:, target_path == c], numpy, axis=1)
+						[:, target_path == c], np, axis=1)
 		else:
 			for i, multiply in enumerate(multiply_seq):
 				cuda.cupy.ElementwiseKernel(
@@ -151,7 +170,7 @@ class BigramConnectionistTemporalClassification(function.Function):
 		# prob[i] := forward[i] + backward[-i-1]
 		index = offset + path
 		frr = self.recurrence_relation(
-			label, path_length, path.shape[1], numpy.float32, xp)
+			label, path_length, path.shape[1], np.float32, xp)
 		prob = xp.empty(
 			(len(yseq),) + index.shape, dtype=forward_prob.dtype)
 		# forward computation.
@@ -166,14 +185,14 @@ class BigramConnectionistTemporalClassification(function.Function):
 		yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
 		brr = self.recurrence_relation(
 			_move_label_to_back(label, label_length, xp),
-			path_length, path.shape[1], numpy.float32, xp)
+			path_length, path.shape[1], np.float32, xp)
 		# move to back.
 		prob = _move_inputs(prob, input_length, xp)
 
 		# backward computation.
 		ps1 = path.shape[1]
 		backward_prob_index = (
-			xp.arange(0, path.size, ps1, dtype=numpy.int32)[:, None] +
+			xp.arange(0, path.size, ps1, dtype=np.int32)[:, None] +
 			(xp.arange(ps1) - path_length[:, None]) % ps1)
 		for i, y_inv in enumerate(yseq_inv):
 			# calc backward probability
@@ -247,10 +266,7 @@ def bigram_connectionist_temporal_classification(x, t, blank_symbol, input_lengt
 
 	if input_length is None:
 		xp = cuda.get_array_module(x[0].data)
-		input_length = variable.Variable(
-			xp.full((len(x[0].data),), len(x), dtype=numpy.int32))
-		label_length = variable.Variable(
-			xp.full((len(t.data),), len(t.data[0]), dtype=numpy.int32))
+		input_length = variable.Variable(xp.full((len(x[0].data),), len(x), dtype=np.int32))
+		label_length = variable.Variable(xp.full((len(t.data),), len(t.data[0]), dtype=np.int32))
 
-	return BigramConnectionistTemporalClassification(blank_symbol, reduce)(
-		input_length, label_length, t, *x)
+	return BigramConnectionistTemporalClassification(blank_symbol, reduce)(input_length, label_length, t, *x)
