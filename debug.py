@@ -38,7 +38,7 @@ def b():
 	length_bigram = length_unigram - 1
 	path_length = length_unigram * 2 + 1 + length_bigram
 
-	relation_mat = gram_ctc._create_recurrence_relation_matrix(labels_unigram, labels_bigram, path_length, path.shape[1], np.float32, np, zero_padding=-5)
+	relation_mat = gram_ctc._create_forward_connection_matrix(labels_unigram, labels_bigram, path_length, path.shape[1], np.float32, np, zero_padding=-5)
 
 def c():
 	labels_unigram = np.asarray([
@@ -79,8 +79,10 @@ def c():
 		labels_bigram, length_bigram, path, path_length, np, zero_padding)
 
 def d():
+	np.set_printoptions(linewidth=200, precision=1)
+	np.random.seed(0)
 	labels_unigram = np.asarray([
-		[1, 2, 4, 3, 5],
+		[1, 2, 2, 3, 5],
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	labels_bigram = np.asarray([
@@ -94,25 +96,40 @@ def d():
 	path_length = length_unigram * 2 + 1 + length_bigram
 
 	vocab_size = 10
+	vocab_size_ctc = 6
 	seq_length = 20
 	batchsize = 2
-	xs = np.random.normal(0, 1, size=batchsize*vocab_size*seq_length).reshape((batchsize, vocab_size, 1, seq_length)).astype(np.float32)
-	xs = Variable(xs)
-	xs = functions.swapaxes(xs, 1, 3)
-	xs = functions.reshape(xs, (batchsize, -1))
-	xs = functions.split_axis(xs, seq_length, axis=1)
+	x = np.random.normal(0, 1, size=batchsize*vocab_size*seq_length).reshape((batchsize, vocab_size, 1, seq_length)).astype(np.float32)
+	x[:, vocab_size_ctc:] = -10000000000.0
 
-	x_length = Variable(np.asarray([seq_length, seq_length // 2], dtype=np.int32))
+	# if True:
+	# 	xs = Variable(x)
+	# 	xs = functions.swapaxes(xs, 1, 3)
+	# 	xs = functions.reshape(xs, (batchsize, -1))
+	# 	xs = functions.split_axis(xs, seq_length, axis=1)
 
-	loss_ctc = ctc.connectionist_temporal_classification(xs, labels_unigram, blank_symbol, x_length, Variable(length_unigram), reduce="no")
-	loss_gram_ctc = gram_ctc.gram_ctc(xs, labels_unigram, labels_bigram, blank_symbol, x_length, Variable(length_unigram), reduce="no")
+	# 	x_length = Variable(np.asarray([seq_length, seq_length // 2], dtype=np.int32))
 
-	print(loss_ctc)
-	print(loss_gram_ctc)
+	# 	print("Gram-CTC:")
+	# 	loss_gram_ctc = gram_ctc.gram_ctc(xs, labels_unigram, labels_bigram, blank_symbol, x_length, Variable(length_unigram), reduce="no")
+
+	if True:
+		xs = Variable(x[:, :vocab_size_ctc])
+		xs = functions.swapaxes(xs, 1, 3)
+		xs = functions.reshape(xs, (batchsize, -1))
+		xs = functions.split_axis(xs, seq_length, axis=1)
+
+		x_length = Variable(np.asarray([seq_length, seq_length // 2], dtype=np.int32))
+
+		print("CTC:")
+		loss_ctc = ctc.connectionist_temporal_classification(xs, labels_unigram, blank_symbol, x_length, Variable(length_unigram), reduce="no")
+
+	# print(loss_ctc)
+	# print(loss_gram_ctc)
 
 
 if __name__ == "__main__":
 	# a()
-	# b()
+	b()
 	# c()
-	d()
+	# d()

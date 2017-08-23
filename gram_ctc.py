@@ -66,7 +66,7 @@ def _eye(N, k, xp, dtype):
 	return ret
 
 # ノードの接続関係を表す行列を作る
-def _create_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
+def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
 	batchsize, length_u = label_unigram.shape
 	length_b = label_bigram.shape[1]
 	N = max_length
@@ -92,13 +92,52 @@ def _create_connection_matrix(label_unigram, label_bigram, path_length, max_leng
 	relation_mat[:, 0, 7] = 0
 
 	# パスの長さを超える部分は0埋め
-	relation_mat = relation_mat * (path_length[:, None] > xp.arange(max_length))[..., None]
-	relation_mat = relation_mat * (path_length[:, None] > xp.arange(max_length))[:, None, :]
+	relation_mat *= (path_length[:, None] > xp.arange(max_length))[..., None]
+	relation_mat *= (path_length[:, None] > xp.arange(max_length))[:, None, :]
 
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
 	ignore_mask[:, 4::3] = label_bigram != -1
 	relation_mat *= ignore_mask[:, None, :]
+	relation_mat *= ignore_mask[..., None]
+
+	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
+
+# ノードの接続関係を表す行列を作る
+def _create_backward_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
+	batchsize, length_u = label_unigram.shape
+	length_b = label_bigram.shape[1]
+	N = max_length
+
+	repeat_mask = xp.ones((batchsize, N))
+	repeat_mask[:, 0::3] = label_unigram != xp.roll(label_unigram, 1, axis=1)
+	repeat_mask[:, 0] = 1
+	repeat_mask = repeat_mask[:, None]
+
+	relation_mat = (
+		_eye(N, (0,),	xp, dtype)[None, :] +
+		_eye(N, (1,), 	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
+		_eye(N, (2,),	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) * repeat_mask +
+		_eye(N, (3,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 0) * repeat_mask +
+		_eye(N, (5,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) + 
+		_eye(N, (6, 7), xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) * xp.roll(repeat_mask, 4, axis=2)
+	)
+
+	relation_mat[:, 0, 1] = 1
+	relation_mat[:, 0, 2] = 0
+	relation_mat[:, 0, 3] = 0
+	relation_mat[:, 0, 4] = 1
+	relation_mat[:, 0, 7] = 0
+
+	# パスの長さを超える部分は0埋め
+	relation_mat *= (path_length[:, None] > xp.arange(max_length))[..., None]
+	relation_mat *= (path_length[:, None] > xp.arange(max_length))[:, None, :]
+
+	# bigramが存在しない場合、そのノードへの接続を全て切る
+	ignore_mask = xp.ones((batchsize, N))
+	ignore_mask[:, 4::3] = label_bigram != -1
+	relation_mat *= ignore_mask[:, None, :]
+	relation_mat *= ignore_mask[..., None]
 
 	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
 
@@ -109,10 +148,9 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 	offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
 
 	index = offset + path
-	forward_connection = _create_connection_matrix(label_unigram, label_bigram, path_length, path.shape[1], dtype, xp, zero_padding)
+	forward_connection = _create_forward_connection_matrix(label_unigram, label_bigram, path_length, path.shape[1], dtype, xp, zero_padding)
 	prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
 
-	# np.set_printoptions(linewidth=200, precision=0)
 	# print("forward_connection")
 	# print(forward_connection / 100)
 	# print("path")
@@ -144,7 +182,7 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 
 	# rotate yseq with path_length
 	yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
-	backward_connection = _create_connection_matrix(_reverse_path(label_unigram, length_unigram, xp), _reverse_path(label_bigram, length_bigram, xp),
+	backward_connection = _create_forward_connection_matrix(_reverse_path(label_unigram, length_unigram, xp), _reverse_path(label_bigram, length_bigram, xp),
 	 path_length, path.shape[1], dtype, xp, zero_padding)
 
 	# print("backward_connection")
@@ -157,10 +195,18 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 	mod = path.shape[1]
 	backward_prob_index = xp.arange(0, path.size, mod, dtype=np.int32)[:, None] + (xp.arange(mod) - path_length[:, None]) % mod
 	for i, y_inv in enumerate(yseq_inv):
+		print("log_dot")
+		print(_log_dot(backward_prob[:, None, :], backward_connection, xp))
 		# calc backward probability
 		backward_prob = _log_dot(backward_prob[:, None, :], backward_connection, xp)
+		print("take1")
+		print(xp.take(backward_prob[:, ::-1], backward_prob_index))
 		prob[-i - 1] += xp.take(backward_prob[:, ::-1], backward_prob_index)
 		backward_prob = xp.take(y_inv, r_index) + backward_prob
+		print("take2")
+		print(xp.take(y_inv, r_index))
+		print("backward_prob")
+		print(backward_prob)
 
 	# move to front.
 	return _move_inputs(prob, -input_length, xp)
@@ -170,6 +216,7 @@ class GramCTC(function.Function):
 	def __init__(self, blank_symbol, reduce='mean'):
 		self.blank_symbol = blank_symbol
 		self.zero_padding = -10000000000.0
+		self.zero_padding = -100.0
 
 		if reduce not in ('mean', 'no'):
 			raise ValueError(

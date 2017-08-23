@@ -62,6 +62,7 @@ class ConnectionistTemporalClassification(function.Function):
     def __init__(self, blank_symbol, reduce='mean'):
         self.blank_symbol = blank_symbol
         self.zero_padding = -10000000000.0
+        self.zero_padding = -100.0
 
         if reduce not in ('mean', 'no'):
             raise ValueError(
@@ -160,25 +161,33 @@ class ConnectionistTemporalClassification(function.Function):
                                           path.shape[1], ret[i])
         return ret
 
-    def calc_trans(self, yseq, input_length,
-                   label, label_length, path, path_length, xp):
-        forward_prob = self.log_matrix(
-            xp.eye(path.shape[1], dtype='f')[0], xp)[None, :]
+    def calc_trans(self, yseq, input_length, label, label_length, path, path_length, xp):
+        forward_prob = self.log_matrix(xp.eye(path.shape[1], dtype='f')[0], xp)[None, :]
         backward_prob = forward_prob
-        offset = xp.arange(
-            0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
+        offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
 
         # prob[i] := forward[i] + backward[-i-1]
         index = offset + path
-        frr = self.recurrence_relation(
-            label, path_length, path.shape[1], numpy.float32, xp)
-        prob = xp.empty(
-            (len(yseq),) + index.shape, dtype=forward_prob.dtype)
+        frr = self.recurrence_relation(label, path_length, path.shape[1], numpy.float32, xp)
+        prob = xp.empty((len(yseq),) + index.shape, dtype=forward_prob.dtype)
+
+        # print("forward_connection")
+        # print(frr.swapaxes(1, 2) / 100)
+
         # forward computation.
         for i, y in enumerate(yseq):
+            # print("y")
+            # print(y)
+            # print("take")
+            # print(xp.take(y, index))
+            # print("plus")
+            # print(forward_prob[:, None, :] + frr)
+            # print("log_dot")
+            # print(_log_dot(forward_prob[:, None, :], frr, xp))
             # calc forward probability in log scale
-            forward_prob = xp.take(y, index) + _log_dot(
-                forward_prob[:, None, :], frr, xp)
+            forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], frr, xp)
+            # print("forward_prob")
+            # print(forward_prob)
             prob[i] = forward_prob
         r_index = offset + _move_label_to_back(path, path_length, xp)
 
@@ -187,6 +196,8 @@ class ConnectionistTemporalClassification(function.Function):
         brr = self.recurrence_relation(
             _move_label_to_back(label, label_length, xp),
             path_length, path.shape[1], numpy.float32, xp)
+        # print("backward_connection")
+        # print(brr.swapaxes(1, 2) / 100)
         # move to back.
         prob = _move_inputs(prob, input_length, xp)
 
@@ -197,10 +208,17 @@ class ConnectionistTemporalClassification(function.Function):
             (xp.arange(ps1) - path_length[:, None]) % ps1)
         for i, y_inv in enumerate(yseq_inv):
             # calc backward probability
+            print("log_dot")
+            print(_log_dot(backward_prob[:, None, :], brr, xp))
             backward_prob = _log_dot(backward_prob[:, None, :], brr, xp)
-            prob[-i - 1] += xp.take(
-                backward_prob[:, ::-1], backward_prob_index)
+            print("take1")
+            print(xp.take(backward_prob[:, ::-1], backward_prob_index))
+            prob[-i - 1] += xp.take(backward_prob[:, ::-1], backward_prob_index)
             backward_prob = xp.take(y_inv, r_index) + backward_prob
+            print("take2")
+            print(xp.take(y_inv, r_index))
+            print("backward_prob")
+            print(backward_prob)
 
         # move to front.
         return _move_inputs(prob, -self.input_length, xp)
