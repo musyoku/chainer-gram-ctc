@@ -10,6 +10,7 @@ from chainer import utils
 from chainer.utils import type_check
 from chainer import variable
 
+# axisに沿ってexpしながら足し最後にlogを通す操作と同等
 def _logsumexp(a, xp, axis=None):
 	vmax = xp.amax(a, axis=axis, keepdims=True)
 	vmax += xp.log(xp.sum(xp.exp(a - vmax), axis=axis, keepdims=True, dtype=a.dtype))
@@ -20,6 +21,7 @@ def _softmax(x, xp):
 	val /= xp.sum(val, axis=2, keepdims=True)
 	return val
 
+# ラベル列からblankを挿入したパスを生成
 def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
 	batchsize = len(unigram_labels)
 	unigram_length = unigram_labels.shape[1]
@@ -32,20 +34,19 @@ def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
 	path[:, 4::3] = bigram_labels
 	return path
 
-def _log_dot(prob, rr, xp):
-	return _logsumexp(prob + xp.swapaxes(rr, 1, 2), xp, axis=2)
+def _log_dot(prob, connection, xp):
+	return _logsumexp(prob + connection, xp, axis=2)
 
-def _move_label_to_back(path, path_length, xp):
-	s1 = path.shape[1]  # TODO(okuta): Change name
-	index = (xp.arange(0, path.size, s1, dtype=np.int32)[:, None] +
-			 (xp.arange(s1) + path_length[:, None])[:, ::-1] % s1)
+def _reverse_path(path, path_length, xp):
+	mod = path.shape[1]
+	index = xp.arange(0, path.size, mod, dtype=np.int32)[:, None] + (xp.arange(mod) + path_length[:, None])[:, ::-1] % mod
 	return xp.take(path, index)
 
 def _move_inputs(prob, input_length, xp):
-	seq, batch, ch = prob.shape
-	rotate = (xp.arange(seq)[:, None] + input_length) % seq
-	index = rotate * batch + xp.arange(batch)
-	return xp.take(prob.reshape(seq * batch, ch), index, axis=0)
+	seq_length, batchsize, vocab_size = prob.shape
+	rotate = (xp.arange(seq_length)[:, None] + input_length) % seq_length
+	index = rotate * batchsize + xp.arange(batchsize)
+	return xp.take(prob.reshape(seq_length * batchsize, vocab_size), index, axis=0)
 
 def _log_matrix(x, xp, zero_padding):
 	if xp == np:
@@ -65,7 +66,7 @@ def _eye(N, k, xp, dtype):
 	return ret
 
 # ノードの接続関係を表す行列を作る
-def _create_connection_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding=-10000000000.0):
+def _create_connection_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding):
 	batchsize, length_u = unigram_label.shape
 	length_b = bigram_label.shape[1]
 	N = max_length
@@ -99,49 +100,70 @@ def _create_connection_matrix(unigram_label, bigram_label, path_length, max_leng
 	ignore_mask[:, 4::3] = bigram_label != -1
 	relation_mat *= ignore_mask[:, None, :]
 
-	print(relation_mat)
-	print(relation_mat.swapaxes(1, 2))
+	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
 
-	return _log_matrix(relation_mat, xp, zero_padding=zero_padding)
-
-def _compute_transition_probability(self, yseq, input_length, label, label_length, path, path_length, xp):
+def _compute_transition_probability(yseq, input_length, unigram_label, unigram_length, bigram_label, bigram_length, path, path_length, xp, zero_padding):
 	dtype = np.float32
-	forward_prob = _log_matrix(xp.eye(path.shape[1], dtype=dtype)[0], xp)[None, :]
+	forward_prob = _log_matrix(xp.eye(path.shape[1], dtype=dtype)[0], xp, zero_padding)[None, :]
 	backward_prob = forward_prob
 	offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
 
-	# prob[i] := forward[i] + backward[-i-1]
 	index = offset + path
-	forward_connection = _create_connection_matrix(label, path_length, path.shape[1], dtype, xp)
+	forward_connection = _create_connection_matrix(unigram_label, bigram_label, path_length, path.shape[1], dtype, xp, zero_padding)
 	prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
+
+	np.set_printoptions(linewidth=200, precision=0)
+	print("forward_connection")
+	print(forward_connection / 100)
+	print("path")
+	print(path)
+	print(offset)
+	print(path + offset)
+	print("forward_prob")
+	print(forward_prob)
 
 	# forward computation.
 	for i, y in enumerate(yseq):
+		print("y")
+		print(y)
+		print("take")
+		print(xp.take(y, index))
+		print("plus")
+		print(forward_prob[:, None, :] + forward_connection)
+		print("log_dot")
+		print(_log_dot(forward_prob[:, None, :], forward_connection, xp))
 		# calc forward probability in log scale
 		forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], forward_connection, xp)
+		print("forward_prob")
+		print(forward_prob)
 		prob[i] = forward_prob
-	r_index = offset + _move_label_to_back(path, path_length, xp)
+
+	print(path)
+	print(_reverse_path(path, path_length, xp))
+	r_index = offset + _reverse_path(path, path_length, xp)
 
 	# rotate yseq with path_length
 	yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
-	brr = _create_connection_matrix(_move_label_to_back(label, label_length, xp), path_length, path.shape[1], dtype, xp)
+	backward_connection = _create_connection_matrix(_reverse_path(unigram_label, unigram_length, xp), _reverse_path(bigram_label, bigram_length, xp),
+	 path_length, path.shape[1], dtype, xp, zero_padding)
+
+	print("backward_connection")
+	print(backward_connection / 100)
+
 	# move to back.
 	prob = _move_inputs(prob, input_length, xp)
 
 	# backward computation.
-	ps1 = path.shape[1]
-	backward_prob_index = (
-		xp.arange(0, path.size, ps1, dtype=np.int32)[:, None] +
-		(xp.arange(ps1) - path_length[:, None]) % ps1)
+	mod = path.shape[1]
+	backward_prob_index = xp.arange(0, path.size, mod, dtype=np.int32)[:, None] + (xp.arange(mod) - path_length[:, None]) % mod
 	for i, y_inv in enumerate(yseq_inv):
 		# calc backward probability
-		backward_prob = _log_dot(backward_prob[:, None, :], brr, xp)
-		prob[-i - 1] += xp.take(
-			backward_prob[:, ::-1], backward_prob_index)
+		backward_prob = _log_dot(backward_prob[:, None, :], backward_connection, xp)
+		prob[-i - 1] += xp.take(backward_prob[:, ::-1], backward_prob_index)
 		backward_prob = xp.take(y_inv, r_index) + backward_prob
 
 	# move to front.
-	return _move_inputs(prob, -self.input_length, xp)
+	return _move_inputs(prob, -input_length, xp)
 
 class GramCTC(function.Function):
 
@@ -180,9 +202,7 @@ class GramCTC(function.Function):
 				target_path = path[b][0:path_length[b]]
 				chars = {c for c in target_path}
 				for c in chars:
-					ret[:, b, c] = _logsumexp(
-						multiply_seq[:, b, 0:path_length[b]]
-						[:, target_path == c], np, axis=1)
+					ret[:, b, c] = _logsumexp(multiply_seq[:, b, 0:path_length[b]][:, target_path == c], np, axis=1)
 		else:
 			for i, multiply in enumerate(multiply_seq):
 				cuda.cupy.ElementwiseKernel(
@@ -260,7 +280,7 @@ class GramCTC(function.Function):
 		return (None, None, None) + tuple([y for y in self.yseq])
 
 
-def bigram_connectionist_temporal_classification(x, t, blank_symbol, input_length=None, label_length=None, reduce='mean'):
+def gram_connectionist_temporal_classification(x, t, blank_symbol, input_length=None, label_length=None, reduce='mean'):
 	if not isinstance(x, collections.Sequence):
 		raise TypeError('x must be a list of Variables')
 	if not isinstance(blank_symbol, int):
