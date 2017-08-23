@@ -24,9 +24,9 @@ def _softmax(x, xp):
 # ラベル列からblankを挿入したパスを生成
 def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
 	batchsize = len(unigram_labels)
-	unigram_length = unigram_labels.shape[1]
-	bigram_length = bigram_labels.shape[1]
-	path = xp.full((batchsize, unigram_length * 2 + 1 + bigram_length), blank_symbol, dtype=np.int32)
+	length_unigram = unigram_labels.shape[1]
+	length_bigram = bigram_labels.shape[1]
+	path = xp.full((batchsize, length_unigram * 2 + 1 + length_bigram), blank_symbol, dtype=np.int32)
 	# unigram
 	path[:, 3::3] = unigram_labels[:, 1:]
 	path[:, 1] = unigram_labels[:, 0]
@@ -66,13 +66,13 @@ def _eye(N, k, xp, dtype):
 	return ret
 
 # ノードの接続関係を表す行列を作る
-def _create_connection_matrix(unigram_label, bigram_label, path_length, max_length, dtype, xp, zero_padding):
-	batchsize, length_u = unigram_label.shape
-	length_b = bigram_label.shape[1]
+def _create_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
+	batchsize, length_u = label_unigram.shape
+	length_b = label_bigram.shape[1]
 	N = max_length
 
 	repeat_mask = xp.ones((batchsize, N))
-	repeat_mask[:, 0::3] = unigram_label != xp.roll(unigram_label, 1, axis=1)
+	repeat_mask[:, 0::3] = label_unigram != xp.roll(label_unigram, 1, axis=1)
 	repeat_mask[:, 0] = 1
 	repeat_mask = repeat_mask[:, None]
 
@@ -97,58 +97,58 @@ def _create_connection_matrix(unigram_label, bigram_label, path_length, max_leng
 
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
-	ignore_mask[:, 4::3] = bigram_label != -1
+	ignore_mask[:, 4::3] = label_bigram != -1
 	relation_mat *= ignore_mask[:, None, :]
 
 	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
 
-def _compute_transition_probability(yseq, input_length, unigram_label, unigram_length, bigram_label, bigram_length, path, path_length, xp, zero_padding):
+def _compute_transition_probability(yseq, input_length, label_unigram, length_unigram, label_bigram, length_bigram, path, path_length, xp, zero_padding):
 	dtype = np.float32
 	forward_prob = _log_matrix(xp.eye(path.shape[1], dtype=dtype)[0], xp, zero_padding)[None, :]
 	backward_prob = forward_prob
 	offset = xp.arange(0, yseq[0].size, yseq[0].shape[1], dtype=path.dtype)[:, None]
 
 	index = offset + path
-	forward_connection = _create_connection_matrix(unigram_label, bigram_label, path_length, path.shape[1], dtype, xp, zero_padding)
+	forward_connection = _create_connection_matrix(label_unigram, label_bigram, path_length, path.shape[1], dtype, xp, zero_padding)
 	prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
 
-	np.set_printoptions(linewidth=200, precision=0)
-	print("forward_connection")
-	print(forward_connection / 100)
-	print("path")
-	print(path)
-	print(offset)
-	print(path + offset)
-	print("forward_prob")
-	print(forward_prob)
+	# np.set_printoptions(linewidth=200, precision=0)
+	# print("forward_connection")
+	# print(forward_connection / 100)
+	# print("path")
+	# print(path)
+	# print(offset)
+	# print(path + offset)
+	# print("forward_prob")
+	# print(forward_prob)
 
 	# forward computation.
 	for i, y in enumerate(yseq):
-		print("y")
-		print(y)
-		print("take")
-		print(xp.take(y, index))
-		print("plus")
-		print(forward_prob[:, None, :] + forward_connection)
-		print("log_dot")
-		print(_log_dot(forward_prob[:, None, :], forward_connection, xp))
+		# print("y")
+		# print(y)
+		# print("take")
+		# print(xp.take(y, index))
+		# print("plus")
+		# print(forward_prob[:, None, :] + forward_connection)
+		# print("log_dot")
+		# print(_log_dot(forward_prob[:, None, :], forward_connection, xp))
 		# calc forward probability in log scale
 		forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], forward_connection, xp)
-		print("forward_prob")
-		print(forward_prob)
+		# print("forward_prob")
+		# print(forward_prob)
 		prob[i] = forward_prob
 
-	print(path)
-	print(_reverse_path(path, path_length, xp))
+	# print(path)
+	# print(_reverse_path(path, path_length, xp))
 	r_index = offset + _reverse_path(path, path_length, xp)
 
 	# rotate yseq with path_length
 	yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
-	backward_connection = _create_connection_matrix(_reverse_path(unigram_label, unigram_length, xp), _reverse_path(bigram_label, bigram_length, xp),
+	backward_connection = _create_connection_matrix(_reverse_path(label_unigram, length_unigram, xp), _reverse_path(label_bigram, length_bigram, xp),
 	 path_length, path.shape[1], dtype, xp, zero_padding)
 
-	print("backward_connection")
-	print(backward_connection / 100)
+	# print("backward_connection")
+	# print(backward_connection / 100)
 
 	# move to back.
 	prob = _move_inputs(prob, input_length, xp)
@@ -179,12 +179,14 @@ class GramCTC(function.Function):
 
 	def check_type_forward(self, in_types):
 		type_check.expect(in_types.size() > 3)  # TODO(okuta): > 3?
-		l_type = in_types[2]
-		type_check.expect(l_type.dtype == np.int32)
+		label_type_unigram = in_types[2]
+		label_type_bigram = in_types[3]
+		type_check.expect(label_type_unigram.dtype == np.int32)
+		type_check.expect(label_type_bigram.dtype == np.int32)
 
-		x_basetype = in_types[3]  # TODO(oktua): Check x_basetype size
+		x_basetype = in_types[4]  # TODO(oktua): Check x_basetype size
 
-		for i in six.moves.range(3, len(in_types)):
+		for i in six.moves.range(4, len(in_types)):
 			x_type = in_types[i]
 			type_check.expect(
 				x_type.dtype == np.float32,
@@ -234,27 +236,30 @@ class GramCTC(function.Function):
 	def forward(self, inputs):
 		xp = cuda.get_array_module(inputs[0])
 		self.input_length = inputs[0]
-		label_length = inputs[1]
-		t = inputs[2]
-		xs = inputs[3:]
+		length_unigram = inputs[1]
+		label_unigram = inputs[2]
+		label_bigram = inputs[3]
+		length_bigram = length_unigram - 1
+		xs = inputs[4:]
 
 		if chainer.is_debug():
 			# batch size check.
-			assert len(xs[0]) == len(t)
+			assert len(xs[0]) == len(label_unigram)
 			assert len(xs[0]) == len(self.input_length)
-			assert len(xs[0]) == len(label_length)
+			assert len(xs[0]) == len(length_unigram)
 
 			# length check.
 			assert len(xs) >= xp.max(self.input_length)
-			assert len(t[0]) >= xp.max(label_length)
+			assert len(label_unigram[0]) >= xp.max(length_unigram)
 
-		self.path_length = 2 * label_length + 1
+		self.path_length = length_unigram * 2 + 1 + length_bigram
 
 		yseq_shape = (len(xs),) + xs[0].shape
 		self.yseq = _softmax(xp.vstack(xs).reshape(yseq_shape), xp)
-		log_yseq = _log_matrix(self.yseq, xp)
-		self.path = _label_to_path(t, self.blank_symbol, xp)
-		self.prob_trans = _compute_transition_probability(log_yseq, self.input_length, t, label_length, self.path, self.path_length, xp)
+		log_yseq = _log_matrix(self.yseq, xp, self.zero_padding)
+		self.path = _label_to_path(label_unigram, label_bigram, self.blank_symbol, xp)
+		self.prob_trans = _compute_transition_probability(log_yseq, self.input_length, 
+			label_unigram, length_unigram, label_bigram, length_bigram, self.path, self.path_length, xp, self.zero_padding)
 
 		loss = -_logsumexp(self.prob_trans[0], xp, axis=1)
 		if self.reduce == 'mean':
@@ -279,19 +284,19 @@ class GramCTC(function.Function):
 			xp.arange(len(self.yseq))[:, None] < self.input_length)[..., None]
 		return (None, None, None) + tuple([y for y in self.yseq])
 
-
-def gram_connectionist_temporal_classification(x, t, blank_symbol, input_length=None, label_length=None, reduce='mean'):
-	if not isinstance(x, collections.Sequence):
-		raise TypeError('x must be a list of Variables')
+# xsはリスト
+def gram_ctc(xs, label_unigram, label_bigram, blank_symbol, input_length=None, length_unigram=None, reduce='mean'):
+	if not isinstance(xs, collections.Sequence):
+		raise TypeError('xs must be a list of Variables')
 	if not isinstance(blank_symbol, int):
 		raise TypeError('blank_symbol must be non-negative integer.')
 	assert blank_symbol >= 0
-	assert blank_symbol < x[0].shape[1]
-	assert(len(x[0].shape) == 2)
+	assert blank_symbol < xs[0].shape[1]
+	assert(len(xs[0].shape) == 2)
 
 	if input_length is None:
-		xp = cuda.get_array_module(x[0].data)
-		input_length = variable.Variable(xp.full((len(x[0].data),), len(x), dtype=np.int32))
-		label_length = variable.Variable(xp.full((len(t.data),), len(t.data[0]), dtype=np.int32))
+		xp = cuda.get_array_module(xs[0].data)
+		input_length = variable.Variable(xp.full((len(xs[0].data),), len(xs), dtype=np.int32))
+		length_unigram = variable.Variable(xp.full((len(label_unigram.data),), len(label_unigram.data[0]), dtype=np.int32))
 
-	return GramCTC(blank_symbol, reduce)(input_length, label_length, t, *x)
+	return GramCTC(blank_symbol, reduce)(input_length, length_unigram, label_unigram, label_bigram, *xs)
