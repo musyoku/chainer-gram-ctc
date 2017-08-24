@@ -113,8 +113,8 @@ class ConnectionistTemporalClassification(function.Function):
               (xp.eye(max_length, k=2, dtype=dtype) *
                (xp.arange(max_length, dtype=dtype) % dtype(2))[None, :]
                * repeat_mask[:, None]))
-        return self.log_matrix(
-            rr * (path_length[:, None] > xp.arange(max_length))[..., None], xp)
+        rr = rr * (path_length[:, None] > xp.arange(max_length))[..., None]
+        return self.log_matrix(rr, xp)
 
     # path probablity to label probability
     def label_probability(self, label_size, path, path_length,
@@ -196,8 +196,8 @@ class ConnectionistTemporalClassification(function.Function):
         brr = self.recurrence_relation(
             _move_label_to_back(label, label_length, xp),
             path_length, path.shape[1], numpy.float32, xp)
-        # print("backward_connection")
-        # print(brr.swapaxes(1, 2) / 100)
+        print("backward_connection")
+        print(brr.swapaxes(1, 2) / 100)
         # move to back.
         prob = _move_inputs(prob, input_length, xp)
 
@@ -211,10 +211,16 @@ class ConnectionistTemporalClassification(function.Function):
             print("log_dot")
             print(_log_dot(backward_prob[:, None, :], brr, xp))
             backward_prob = _log_dot(backward_prob[:, None, :], brr, xp)
+            print("backward_prob_index")
+            print(backward_prob_index)
+            print("backward_prob[:, ::-1]")
+            print(backward_prob[:, ::-1])
             print("take1")
             print(xp.take(backward_prob[:, ::-1], backward_prob_index))
             prob[-i - 1] += xp.take(backward_prob[:, ::-1], backward_prob_index)
             backward_prob = xp.take(y_inv, r_index) + backward_prob
+            print("r_index")
+            print(r_index)
             print("take2")
             print(xp.take(y_inv, r_index))
             print("backward_prob")
