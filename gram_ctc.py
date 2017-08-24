@@ -28,10 +28,9 @@ def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
 	length_bigram = bigram_labels.shape[1]
 	path = xp.full((batchsize, length_unigram * 2 + 1 + length_bigram), blank_symbol, dtype=np.int32)
 	# unigram
-	path[:, 3::3] = unigram_labels[:, 1:]
-	path[:, 1] = unigram_labels[:, 0]
+	path[:, 1::3] = unigram_labels
 	# bigram
-	path[:, 4::3] = bigram_labels
+	path[:, 2::3] = bigram_labels
 	return path
 
 def _log_dot(prob, connection, xp):
@@ -63,26 +62,43 @@ def _eye(N, k, xp, dtype):
 	ret = xp.eye(N, k=k[-1], dtype=dtype)
 	for diagonal in k[:-1]:
 		ret += xp.eye(N, k=diagonal, dtype=dtype)
-	return ret
+	return ret[None, :]
 
 # ノードの接続関係を表す行列を作る
 def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
-	batchsize, length_u = label_unigram.shape
+	batchsize, length_unigram = label_unigram.shape
 	length_b = label_bigram.shape[1]
 	N = max_length
 
-	repeat_mask = xp.ones((batchsize, N))
-	repeat_mask[:, 0::3] = label_unigram != xp.roll(label_unigram, 1, axis=1)
-	repeat_mask[:, 0] = 1
-	repeat_mask = repeat_mask[:, None]
+	repeat_mask_unigram = xp.ones((batchsize, N))
+	repeat_mask_unigram[:, 1::3] = label_unigram != xp.roll(label_unigram, 1, axis=1)
+	repeat_mask_unigram[:, 1] = 1
+	print(label_unigram)
+	print(xp.roll(label_unigram, 1, axis=1))
+	print(label_unigram != xp.roll(label_unigram, 1, axis=1))
+	repeat_mask_unigram = repeat_mask_unigram[:, None]
+	print(repeat_mask_unigram)
 
+	repeat_mask_bigram = xp.ones((batchsize, N))
+	repeat_mask_bigram[:, 2::3] = label_bigram != xp.roll(label_bigram, 2, axis=1)
+	repeat_mask_bigram[:, 2] = 1
+	repeat_mask_bigram[:, 5] = 1
+	print(label_bigram)
+	print(xp.roll(label_bigram, 2, axis=1))
+	print(label_bigram != xp.roll(label_bigram, 2, axis=1))
+	repeat_mask_bigram = repeat_mask_bigram[:, None]
+	print(repeat_mask_bigram)
+
+	print((_eye(N, (6,), 	xp, dtype) * (xp.arange(N, dtype=dtype) % dtype(3) == 2) * repeat_mask_bigram).swapaxes(1, 2))
+	raise Exception()
+	arange_mod = xp.arange(N, dtype=dtype) % dtype(3)
 	relation_mat = (
-		_eye(N, (0,),	xp, dtype)[None, :] +
-		_eye(N, (1,), 	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
-		_eye(N, (2,),	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) * repeat_mask +
-		_eye(N, (3,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 0) * repeat_mask +
-		_eye(N, (5,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) + 
-		_eye(N, (6, 7), xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) * xp.roll(repeat_mask, 4, axis=2)
+		_eye(N, (0,),	xp, dtype) +
+		_eye(N, (1, 2),	xp, dtype) * (xp.arange(1, N + 1, dtype=dtype) % dtype(3)).astype(np.bool) +
+		_eye(N, (3,), 	xp, dtype) * (arange_mod == 1) * repeat_mask_unigram +
+		_eye(N, (5,), 	xp, dtype) * (arange_mod == 2) + 
+		_eye(N, (6,),	xp, dtype) * (arange_mod == 2) + 
+		_eye(N, (7,), 	xp, dtype) * (arange_mod == 2)
 	)
 
 	relation_mat[:, 0, 1] = 1
@@ -105,7 +121,7 @@ def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, 
 
 # ノードの接続関係を表す行列を作る
 def _create_backward_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
-	batchsize, length_u = label_unigram.shape
+	batchsize, length_unigram = label_unigram.shape
 	length_b = label_bigram.shape[1]
 	N = max_length
 
@@ -115,12 +131,12 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 	repeat_mask = repeat_mask[:, None]
 
 	relation_mat = (
-		_eye(N, (0,),	xp, dtype)[None, :] +
-		_eye(N, (1,), 	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
-		_eye(N, (2,),	xp, dtype)[None, :] * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) * repeat_mask +
-		_eye(N, (3,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 0) * repeat_mask +
-		_eye(N, (5,), 	xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) + 
-		_eye(N, (6, 7), xp, dtype)[None, :] * (xp.arange(N, dtype=dtype) % dtype(3) == 1) * xp.roll(repeat_mask, 4, axis=2)
+		_eye(N, (0,),	xp, dtype) +
+		_eye(N, (1,), 	xp, dtype) * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) +
+		_eye(N, (2,),	xp, dtype) * (xp.arange(-1, N - 1, dtype=dtype) % dtype(3)).astype(np.bool) * repeat_mask +
+		_eye(N, (3,), 	xp, dtype) * (xp.arange(N, dtype=dtype) % dtype(3) == 0) * repeat_mask +
+		_eye(N, (5,), 	xp, dtype) * (xp.arange(N, dtype=dtype) % dtype(3) == 1) + 
+		_eye(N, (6, 7), xp, dtype) * (xp.arange(N, dtype=dtype) % dtype(3) == 1) * xp.roll(repeat_mask, 4, axis=2)
 	)
 
 	relation_mat[:, 0, 1] = 1

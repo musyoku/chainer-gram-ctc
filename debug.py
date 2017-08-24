@@ -24,15 +24,16 @@ def a():
 
 def b():
 	labels_unigram = np.asarray([
-		[1, 2, 2, 3, 5],
+		[1, 1, 1, 1, 1],
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	labels_bigram = np.asarray([
-		[6, -1, 7, 8],
-		[6, 9, 0, 0],
+		[-1, 6, 6, 6, 6],
+		[-1, 6, 9, 0, 0],
 	], dtype=np.int32)
 	blank_symbol = 0
 	path = gram_ctc._label_to_path(labels_unigram, labels_bigram, blank_symbol, np)
+	print(path)
 
 	length_unigram = np.asarray([5, 3])
 	length_bigram = length_unigram - 1
@@ -46,8 +47,8 @@ def c():
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	labels_bigram = np.asarray([
-		[6, 7, -1, -1],
-		[6, -1, 0, 0],
+		[-1, 6, -1, 7, 8],
+		[-1, 6, 9, 0, 0],
 	], dtype=np.int32)
 	blank_symbol = 0
 	path = gram_ctc._label_to_path(labels_unigram, labels_bigram, blank_symbol, np)
@@ -86,8 +87,8 @@ def d():
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	labels_bigram = np.asarray([
-		[-1, -1, -1, -1],
-		[-1, -1, 0, 0],
+		[-1, 6, -1, 7, 8],
+		[-1, 6, 9, 0, 0],
 	], dtype=np.int32)
 	blank_symbol = 0
 
