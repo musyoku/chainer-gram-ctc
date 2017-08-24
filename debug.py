@@ -24,11 +24,11 @@ def a():
 
 def b():
 	labels_unigram = np.asarray([
-		[1, 1, 1, 1, 1],
+		[1, 2, 3, 4, 5],
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	labels_bigram = np.asarray([
-		[-1, 6, 6, 6, 6],
+		[-1, 6, 7, 8, 6],
 		[-1, 6, 9, 0, 0],
 	], dtype=np.int32)
 	blank_symbol = 0
@@ -36,10 +36,10 @@ def b():
 	print(path)
 
 	length_unigram = np.asarray([5, 3])
-	length_bigram = length_unigram - 1
+	length_bigram = length_unigram
 	path_length = length_unigram * 2 + 1 + length_bigram
 
-	relation_mat = gram_ctc._create_forward_connection_matrix(labels_unigram, labels_bigram, path_length, path.shape[1], np.float32, np, zero_padding=-5)
+	relation_mat = gram_ctc._create_connection_matrix(labels_unigram, labels_bigram, path_length, path.shape[1], np.float32, np, zero_padding=-5)
 
 def c():
 	labels_unigram = np.asarray([
@@ -131,6 +131,6 @@ def d():
 
 if __name__ == "__main__":
 	# a()
-	b()
+	# b()
 	# c()
-	# d()
+	d()
