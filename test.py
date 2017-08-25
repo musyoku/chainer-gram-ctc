@@ -259,8 +259,9 @@ class TestCTCError(unittest.TestCase):
     def test_not_iterable(self):
         x = chainer.Variable(numpy.zeros((4, 2, 3), numpy.float32))
         t = chainer.Variable(numpy.zeros((2, 2), numpy.int32))
+        bigram = chainer.Variable(numpy.zeros((2, 2), numpy.int32))
         with self.assertRaises(TypeError):
-            gram_ctc.gram_ctc(x, t, 0)
+            gram_ctc.gram_ctc(x, t, bigram, 0)
 
 
 class TestCTCInvalidReductionOption(unittest.TestCase):
