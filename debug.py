@@ -89,13 +89,13 @@ def d():
 	# np.random.seed(0)
 	label_unigram = xp.asarray([
 		[1, 2, 2, 3, 5],
-		[2, 4, 3, 0, 0],
+		[2, 4, 3, 9, 9],
 	], dtype=xp.int32)
 	label_bigram = xp.asarray([
 		[-1, -1, -1, -1, -1],
-		[-1, -1, -1, 0, 0],
+		[-1, -1, -1, 9, 9],
 	], dtype=xp.int32)
-	blank_symbol = 0
+	blank_symbol = 9
 
 	length_unigram = xp.asarray([5, 3], dtype=xp.int32)
 	length_bigram = length_unigram
@@ -140,9 +140,6 @@ def d():
 	print(loss_gram_ctc)
 
 	print(xp.sum(xp.abs(grad_ctc - grad_gram_ctc)))
-
-
-
 
 if __name__ == "__main__":
 	# a()

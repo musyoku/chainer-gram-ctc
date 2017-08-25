@@ -217,24 +217,21 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 
 def _compute_label_probability(num_output_units, path, path_length, transition_prob, xp, zero_padding):
 	label_prob = _log_matrix(xp.zeros((len(path), num_output_units), dtype=transition_prob.dtype), xp, zero_padding)
-	print(label_prob)
 	ret = xp.empty((len(transition_prob),) + label_prob.shape, dtype=label_prob.dtype)
 	ret[...] = label_prob
 	if xp == np:
-		for b in six.moves.range(len(path)):
-			target_path = path[b][0:path_length[b]]
-			chars = {c for c in target_path}
-			for c in chars:
-				ret[:, b, c] = _logsumexp(transition_prob[:, b, 0:path_length[b]][:, target_path == c], np, axis=1)
+		for batch_idx in six.moves.range(len(path)):
+			target_path = path[batch_idx][0:path_length[batch_idx]]
+			chars = {unit_idx for unit_idx in target_path}
+			for unit_idx in chars:
+				ret[:, batch_idx, unit_idx] = _logsumexp(transition_prob[:, batch_idx, 0:path_length[batch_idx]][:, target_path == unit_idx], np, axis=1)
 	else:
-		for i, multiply in enumerate(transition_prob):
-			print(label_prob.shape[1], path.shape[1])
-			print(multiply)
+		for i, prob_t in enumerate(transition_prob):
 			cuda.cupy.ElementwiseKernel(
 				'raw T prob, raw I path, raw I path_length, I num_units, I max_path_length',
 				'T z',
 				'''
-				T value = z;
+				T sum_prob = z;
 				I unit_idx = i % num_units;
 				I batch_idx = i / num_units;
 				int ind[2] = {batch_idx, -1};
@@ -242,24 +239,23 @@ def _compute_label_probability(num_output_units, path, path_length, transition_p
 					ind[1] = path_idx;
 					if (path_idx < path_length[ind[0]] && path[ind] == unit_idx) {
 						T p = prob[ind];
-						T at = p, bt = value;
-						if (value > p) {
-							at = value;
-							bt = p;
+						T a = p, b = sum_prob;
+						if (sum_prob > p) {
+							a = sum_prob;
+							b = p;
 						}
-						value = at + log(1 + exp(bt - at));
+						sum_prob = a + log(1 + exp(b - a));
 					}
 				}
-				z = value;
+				z = sum_prob;
 				''',
-				'reduce_probability')(multiply, path, path_length, label_prob.shape[1], path.shape[1], ret[i])
+				'reduce_probability')(prob_t, path, path_length, label_prob.shape[1], path.shape[1], ret[i])
 	return ret
 
 class GramCTC(function.Function):
 	def __init__(self, blank_symbol, reduce='mean'):
 		self.blank_symbol = blank_symbol
 		self.zero_padding = -10000000000.0
-		self.zero_padding = -100.0
 
 		if reduce not in ('mean', 'no'):
 			raise ValueError(
@@ -301,6 +297,11 @@ class GramCTC(function.Function):
 			# length check.
 			assert len(xs) >= xp.max(self.input_length)
 			assert len(label_unigram[0]) >= xp.max(length_unigram)
+
+			# unit check
+			assert xs[0].shape[1] > xp.max(label_unigram)
+			assert xs[0].shape[1] > xp.max(label_bigram)
+			assert xs[0].shape[1] > self.blank_symbol
 
 		self.path_length = length_unigram * 3 + 1
 
