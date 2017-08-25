@@ -25,13 +25,13 @@ def a():
 
 def b():
 	np.set_printoptions(linewidth=200, precision=1)
-	xp = np
+	xp = cupy
 	label_unigram = xp.asarray([
 		[1, 2, 5, 3, 4, 0],
 		[2, 4, 3, 0, 0, 0],
 	], dtype=xp.int32)
 	label_bigram = xp.asarray([
-		[-1, -1, -1, -1, -1, 0],
+		[-1, 7, 8, 9, -1, 0],
 		[-1, 6, 9, 0, 0, 0],
 	], dtype=xp.int32)
 	blank_symbol = 0
@@ -85,18 +85,19 @@ def c():
 
 def d():
 	np.set_printoptions(linewidth=200, precision=1)
-	np.random.seed(0)
-	label_unigram = np.asarray([
+	xp = cupy
+	# np.random.seed(0)
+	label_unigram = xp.asarray([
 		[1, 2, 2, 3, 5],
 		[2, 4, 3, 0, 0],
-	], dtype=np.int32)
-	label_bigram = np.asarray([
+	], dtype=xp.int32)
+	label_bigram = xp.asarray([
 		[-1, -1, -1, -1, -1],
 		[-1, -1, -1, 0, 0],
-	], dtype=np.int32)
+	], dtype=xp.int32)
 	blank_symbol = 0
 
-	length_unigram = np.asarray([5, 3], dtype=np.int32)
+	length_unigram = xp.asarray([5, 3], dtype=xp.int32)
 	length_bigram = length_unigram
 	path_length = length_unigram * 2 + 1 + length_bigram
 
@@ -104,33 +105,43 @@ def d():
 	vocab_size_ctc = 6
 	seq_length = 20
 	batchsize = 2
-	x = np.random.normal(0, 1, size=batchsize*vocab_size*seq_length).reshape((batchsize, vocab_size, 1, seq_length)).astype(np.float32)
-	x[:, vocab_size_ctc:] = -10000000000.0
+	x = xp.random.normal(0, 1, size=batchsize*vocab_size*seq_length).reshape((batchsize, vocab_size, 1, seq_length)).astype(xp.float32)
+	x[:, vocab_size_ctc:] = -10000000000.0		# bigramノードの確率が0になるように
 
 	if True:
 		xs = Variable(x)
-		xs = functions.swapaxes(xs, 1, 3)
-		xs = functions.reshape(xs, (batchsize, -1))
-		xs = functions.split_axis(xs, seq_length, axis=1)
+		in_data = functions.swapaxes(xs, 1, 3)
+		in_data = functions.reshape(in_data, (batchsize, -1))
+		in_data = functions.split_axis(in_data, seq_length, axis=1)
 
-		x_length = Variable(np.asarray([seq_length, seq_length // 2], dtype=np.int32))
+		x_length = Variable(xp.asarray([seq_length, seq_length // 2], dtype=xp.int32))
 
 		print("Gram-CTC:")
-		loss_gram_ctc = gram_ctc.gram_ctc(xs, label_unigram, label_bigram, blank_symbol, x_length, Variable(length_unigram), reduce="no")
+		loss_gram_ctc = gram_ctc.gram_ctc(in_data, label_unigram, label_bigram, blank_symbol, x_length, Variable(length_unigram), reduce="mean")
+		loss_gram_ctc.backward()
+		grad_ctc = xs.grad
 
 	if True:
-		xs = Variable(x[:, :vocab_size_ctc])
-		xs = functions.swapaxes(xs, 1, 3)
-		xs = functions.reshape(xs, (batchsize, -1))
-		xs = functions.split_axis(xs, seq_length, axis=1)
+		xs = Variable(x)
+		in_data = xs[:, :vocab_size_ctc]
+		in_data = functions.swapaxes(xs, 1, 3)
+		in_data = functions.reshape(in_data, (batchsize, -1))
+		in_data = functions.split_axis(in_data, seq_length, axis=1)
 
-		x_length = Variable(np.asarray([seq_length, seq_length // 2], dtype=np.int32))
+		x_length = Variable(xp.asarray([seq_length, seq_length // 2], dtype=xp.int32))
 
 		print("CTC:")
-		loss_ctc = ctc.connectionist_temporal_classification(xs, label_unigram, blank_symbol, x_length, Variable(length_unigram), reduce="no")
+		loss_ctc = ctc.connectionist_temporal_classification(in_data, label_unigram, blank_symbol, x_length, Variable(length_unigram), reduce="mean")
+		loss_ctc.backward()
+		grad_gram_ctc = xs.grad
+
 
 	print(loss_ctc)
 	print(loss_gram_ctc)
+
+	print(xp.sum(xp.abs(grad_ctc - grad_gram_ctc)))
+
+
 
 
 if __name__ == "__main__":

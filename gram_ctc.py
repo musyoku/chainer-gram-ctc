@@ -100,6 +100,7 @@ def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, 
 	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
 
 # ノードの接続関係を表す行列を作る
+# 前向きと後ろ向きで形が異なるためので注意
 def _create_backward_connection_matrix(label_unigram, label_bigram, path_length, max_length, dtype, xp, zero_padding):
 	batchsize, _ = label_unigram.shape
 	N = max_length
@@ -135,6 +136,7 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 	ignore_mask[:, 1::3] = label_bigram != -1
 	relation_mat *= ignore_mask[:, None, :]
 	relation_mat *= ignore_mask[..., None]
+
 	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
 
 def _compute_transition_probability(yseq, input_length, label_unigram, length_unigram, label_bigram, length_bigram, path, path_length, xp, zero_padding):
@@ -147,8 +149,8 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 	forward_connection = _create_forward_connection_matrix(label_unigram, label_bigram, path_length, path.shape[1], dtype, xp, zero_padding)
 	prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
 
-	print("forward_connection")
-	print(forward_connection / 100)
+	# print("forward_connection")
+	# print(forward_connection / 100)
 	# print("path")
 	# print(path)
 	# print(offset)
@@ -174,15 +176,15 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 
 	# print(path)
 	# print(_reverse_path(path, path_length, xp))
-	r_index = offset + _reverse_path(path, path_length, xp)
+	index_rev = offset + _reverse_path(path, path_length, xp)
 
 	# rotate yseq with path_length
-	yseq_inv = _move_inputs(yseq, input_length, xp)[::-1]
+	yseq_rev = _move_inputs(yseq, input_length, xp)[::-1]
 	backward_connection = _create_backward_connection_matrix(_reverse_path(label_unigram, length_unigram, xp), 
 		_reverse_path(label_bigram, length_bigram, xp), path_length, path.shape[1], dtype, xp, zero_padding)
 
-	print("backward_connection")
-	print(backward_connection / 100)
+	# print("backward_connection")
+	# print(backward_connection / 100)
 
 	# move to back.
 	prob = _move_inputs(prob, input_length, xp)
@@ -190,31 +192,70 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 	# backward computation.
 	mod = path.shape[1]
 	backward_prob_index = xp.arange(0, path.size, mod, dtype=np.int32)[:, None] + (xp.arange(mod) - path_length[:, None]) % mod
-	for i, y_inv in enumerate(yseq_inv):
-		print("log_dot")
-		print(_log_dot(backward_prob[:, None, :], backward_connection, xp))
+	for i, y_rev in enumerate(yseq_rev):
+		# print("log_dot")
+		# print(_log_dot(backward_prob[:, None, :], backward_connection, xp))
 		# calc backward probability
 		backward_prob = _log_dot(backward_prob[:, None, :], backward_connection, xp)
-		print("backward_prob_index")
-		print(backward_prob_index)
-		print("backward_prob[:, ::-1]")
-		print(backward_prob[:, ::-1])
-		print("take1")
-		print(xp.take(backward_prob[:, ::-1], backward_prob_index))
+		# print("backward_prob_index")
+		# print(backward_prob_index)
+		# print("backward_prob[:, ::-1]")
+		# print(backward_prob[:, ::-1])
+		# print("take1")
+		# print(xp.take(backward_prob[:, ::-1], backward_prob_index))
 		prob[-i - 1] += xp.take(backward_prob[:, ::-1], backward_prob_index)
-		backward_prob = xp.take(y_inv, r_index) + backward_prob
-		print("r_index")
-		print(r_index)
-		print("take2")
-		print(xp.take(y_inv, r_index))
-		print("backward_prob")
-		print(backward_prob)
+		backward_prob = xp.take(y_rev, index_rev) + backward_prob
+		# print("index_rev")
+		# print(index_rev)
+		# print("take2")
+		# print(xp.take(y_rev, index_rev))
+		# print("backward_prob")
+		# print(backward_prob)
 
 	# move to front.
 	return _move_inputs(prob, -input_length, xp)
 
-class GramCTC(function.Function):
+def _compute_label_probability(num_output_units, path, path_length, transition_prob, xp, zero_padding):
+	label_prob = _log_matrix(xp.zeros((len(path), num_output_units), dtype=transition_prob.dtype), xp, zero_padding)
+	print(label_prob)
+	ret = xp.empty((len(transition_prob),) + label_prob.shape, dtype=label_prob.dtype)
+	ret[...] = label_prob
+	if xp == np:
+		for b in six.moves.range(len(path)):
+			target_path = path[b][0:path_length[b]]
+			chars = {c for c in target_path}
+			for c in chars:
+				ret[:, b, c] = _logsumexp(transition_prob[:, b, 0:path_length[b]][:, target_path == c], np, axis=1)
+	else:
+		for i, multiply in enumerate(transition_prob):
+			print(label_prob.shape[1], path.shape[1])
+			print(multiply)
+			cuda.cupy.ElementwiseKernel(
+				'raw T prob, raw I path, raw I path_length, I num_units, I max_path_length',
+				'T z',
+				'''
+				T value = z;
+				I unit_idx = i % num_units;
+				I batch_idx = i / num_units;
+				int ind[2] = {batch_idx, -1};
+				for (int path_idx = 0; path_idx < max_path_length; ++path_idx) {
+					ind[1] = path_idx;
+					if (path_idx < path_length[ind[0]] && path[ind] == unit_idx) {
+						T p = prob[ind];
+						T at = p, bt = value;
+						if (value > p) {
+							at = value;
+							bt = p;
+						}
+						value = at + log(1 + exp(bt - at));
+					}
+				}
+				z = value;
+				''',
+				'reduce_probability')(multiply, path, path_length, label_prob.shape[1], path.shape[1], ret[i])
+	return ret
 
+class GramCTC(function.Function):
 	def __init__(self, blank_symbol, reduce='mean'):
 		self.blank_symbol = blank_symbol
 		self.zero_padding = -10000000000.0
@@ -241,46 +282,6 @@ class GramCTC(function.Function):
 				x_type.dtype == np.float32,
 				x_type.shape == x_basetype.shape,
 			)
-
-	def label_probability(self, label_size, path, path_length, multiply_seq, xp):
-		labels_prob = _log_matrix(xp.zeros((len(path), label_size),
-											   dtype=multiply_seq.dtype), xp)
-		ret = xp.empty(
-			(len(multiply_seq),) + labels_prob.shape, dtype=labels_prob.dtype)
-		ret[...] = labels_prob
-		if xp == np:
-			for b in six.moves.range(len(path)):
-				target_path = path[b][0:path_length[b]]
-				chars = {c for c in target_path}
-				for c in chars:
-					ret[:, b, c] = _logsumexp(multiply_seq[:, b, 0:path_length[b]][:, target_path == c], np, axis=1)
-		else:
-			for i, multiply in enumerate(multiply_seq):
-				cuda.cupy.ElementwiseKernel(
-					'raw T x, raw I y, raw I l, I b_max, I c_max',
-					'T z',
-					'''
-					T value = z;
-					I c = i % b_max, b = i / b_max;
-					int ind[2] = {b, -1};
-					for (int index = 0; index < c_max; ++index) {
-						ind[1] = index;
-						if (ind[1] < l[ind[0]] && y[ind] == c) {
-							T xvalue = x[ind];
-							T at = xvalue, bt = value;
-							if (value > xvalue) {
-								at = value;
-								bt = xvalue;
-							}
-							value = at + log(1 + exp(bt - at));
-						}
-					}
-					z = value;
-					''',
-					'reduce_probability')(multiply, path, path_length,
-										  labels_prob.shape[1],
-										  path.shape[1], ret[i])
-		return ret
 
 	def forward(self, inputs):
 		xp = cuda.get_array_module(inputs[0])
@@ -320,18 +321,15 @@ class GramCTC(function.Function):
 		batch_size = len(inputs[2])
 
 		total_probability = _logsumexp(self.prob_trans[0], xp, axis=1)
-		label_prob = self.label_probability(
-			self.yseq.shape[2], self.path, self.path_length,
-			self.prob_trans, xp)
+		label_prob = _compute_label_probability(self.yseq.shape[2], self.path, self.path_length, self.prob_trans, xp, self.zero_padding)
 		self.yseq -= xp.exp(label_prob - total_probability[:, None])
 		if self.reduce == 'mean':
 			self.yseq *= grad_output[0] / batch_size
 		else:
 			self.yseq *= grad_output[0][..., None]
 		# mask
-		self.yseq *= (
-			xp.arange(len(self.yseq))[:, None] < self.input_length)[..., None]
-		return (None, None, None) + tuple([y for y in self.yseq])
+		self.yseq *= (xp.arange(len(self.yseq))[:, None] < self.input_length)[..., None]
+		return (None, None, None, None) + tuple([y for y in self.yseq])
 
 # xsはリスト
 def gram_ctc(xs, label_unigram, label_bigram, blank_symbol, input_length=None, length_unigram=None, reduce='mean'):
