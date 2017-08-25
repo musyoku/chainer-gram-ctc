@@ -134,6 +134,8 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
 	ignore_mask[:, 1::3] = label_bigram != -1
+	# print(label_bigram)
+	# print(ignore_mask)
 	relation_mat *= ignore_mask[:, None, :]
 	relation_mat *= ignore_mask[..., None]
 
@@ -224,6 +226,8 @@ def _compute_label_probability(num_output_units, path, path_length, transition_p
 			target_path = path[batch_idx][0:path_length[batch_idx]]
 			chars = {unit_idx for unit_idx in target_path}
 			for unit_idx in chars:
+				if unit_idx == -1:
+					continue
 				ret[:, batch_idx, unit_idx] = _logsumexp(transition_prob[:, batch_idx, 0:path_length[batch_idx]][:, target_path == unit_idx], np, axis=1)
 	else:
 		for i, prob_t in enumerate(transition_prob):
@@ -312,6 +316,9 @@ class GramCTC(function.Function):
 		self.prob_trans = _compute_transition_probability(log_yseq, self.input_length, 
 			label_unigram, length_unigram, label_bigram, length_bigram, self.path, self.path_length, xp, self.zero_padding)
 
+		# print("prob_trans")
+		# print(xp.exp(self.prob_trans))
+		# print(xp.exp(_logsumexp(self.prob_trans[0], xp, axis=1)))
 		loss = -_logsumexp(self.prob_trans[0], xp, axis=1)
 		if self.reduce == 'mean':
 			loss = utils.force_array(xp.mean(loss))

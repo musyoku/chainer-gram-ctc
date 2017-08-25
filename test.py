@@ -12,10 +12,10 @@ import gram_ctc
 class GramCTCTestBase(object):
 
     def setUp(self):
-        self.blank_symbol = 4
-        self.x = numpy.random.uniform(-1, 1, (4, 2, 3)).astype(numpy.float32)
+        self.blank_symbol = 3
+        self.x = numpy.random.uniform(-1, 1, (4, 2, 4)).astype(numpy.float32)
         self.t = numpy.array([[0, 1], [1, 0]]).astype(numpy.int32)
-        self.bigram = numpy.array([[-1, 2], [-1, 3]]).astype(numpy.int32)
+        self.bigram = numpy.array([[-1, 2], [-1, -1]]).astype(numpy.int32)
         self.l = gram_ctc._label_to_path(self.t, self.bigram, self.blank_symbol, numpy)
 
         self.x_length = numpy.full((len(self.x[0]),), len(self.x), dtype='i')
@@ -26,40 +26,47 @@ class GramCTCTestBase(object):
         else:
             self.gy = numpy.random.uniform(-1, 1, (2,)).astype(numpy.float32)
 
-    def alpha_hat(self, y, l, t, u):
-        u = int(math.ceil(u / 3))
-        if u <= 0:
-            return y[t][self.blank_symbol]
-        if u == 1:
-            return y[t][l[u * 3 - 2]] + y[t][l[u * 3]]
-        return y[t][l[u * 3 - 2]] + y[t][l[u * 3 - 1]] + y[t][l[u * 3]]
-
-    def alpha(self, y, l, t, u):
+    def alpha(self, x, l, t, u):
         if u < 0:
             return 0.0
-        if t == 0:
-            if u == 0:
-                return y[0][self.blank_symbol]
-            elif u == 1:
-                return y[0][l[1]]
+        if l[u] == -1:  # 存在しないbigram
             return 0.0
-        if u == 2:  # このbigramは存在しない
+        if t == 0:  # 初期化
+            if u == 0:
+                return x[0][self.blank_symbol]
+            elif u == 1:
+                return x[0][l[u]]
+            elif u == 5:
+                return x[0][l[u]]
             return 0.0
         if l[u] == self.blank_symbol:
-            return y[t][self.blank_symbol] * self.alpha_hat(y, l, t - 1, u)
-        if l[u] != l[u - 3]:
-            if u % 3 == 1: # unigram
-                return y[t][l[u]] * (self.alpha_hat(y, l, t - 1, u - 3) + self.alpha(x, l, t - 1, u))
-            if u % 3 == 2: # bigram
-                return y[t][l[u]] * (self.alpha_hat(y, l, t - 1, u - 6) + self.alpha(x, l, t - 1, u))
-            raise Exception()
-        if l[u] == l[u - 3]:
-            if u % 3 == 1: # unigram
-                return y[t][l[u]] * (self.alpha_hat(y, l, t - 1, u - 3) + self.alpha(x, l, t - 1, u) - self.alpha(x, l, t - 1, u - 3))
-            if u % 3 == 2: # bigram
-                return y[t][l[u]] * (self.alpha_hat(y, l, t - 1, u - 6) + self.alpha(x, l, t - 1, u) - self.alpha(x, l, t - 1, u - 6))
-            raise Exception()
-        raise Exception()
+            return (x[t][self.blank_symbol] *
+                    (self.alpha(x, l, t - 1, u - 2) +
+                     self.alpha(x, l, t - 1, u - 1) +
+                     self.alpha(x, l, t - 1, u)))
+        if u % 3 == 1:  # unigram
+            if u >= 3 and l[u] == l[u - 3]:
+                return (x[t][l[u]] *
+                        (self.alpha(x, l, t - 1, u - 2) +
+                         self.alpha(x, l, t - 1, u - 1) +
+                         self.alpha(x, l, t - 1, u)))
+            return (x[t][l[u]] *
+                    (self.alpha(x, l, t - 1, u - 3) +
+                     self.alpha(x, l, t - 1, u - 2) +
+                     self.alpha(x, l, t - 1, u - 1) +
+                     self.alpha(x, l, t - 1, u)))
+        # bigram
+        if u >= 6 and l[u] == l[u - 6]:
+            return (x[t][l[u]] *
+                    (self.alpha(x, l, t - 1, u - 7) +
+                     self.alpha(x, l, t - 1, u - 5) +
+                     self.alpha(x, l, t - 1, u)))
+
+        return (x[t][l[u]] *
+                (self.alpha(x, l, t - 1, u - 7) +
+                 self.alpha(x, l, t - 1, u - 6) +
+                 self.alpha(x, l, t - 1, u - 5) +
+                 self.alpha(x, l, t - 1, u)))
 
     # recursive forward computation.
     def _alpha(self, x, l, t, u):
@@ -82,11 +89,12 @@ class GramCTCTestBase(object):
                      self.alpha(x, l, t - 1, u - 1) +
                      self.alpha(x, l, t - 1, u)))
 
-    def check_forward(self, t_data, xs_data, l_length, x_length):
+    def check_forward(self, unigram_data, bigram_data, xs_data, l_length, x_length):
         x = tuple(chainer.Variable(x_data) for x_data in xs_data)
-        t = chainer.Variable(t_data)
+        unigram = chainer.Variable(unigram_data)
+        bigram = chainer.Variable(bigram_data)
 
-        args = (x, t, self.blank_symbol)
+        args = (x, unigram, bigram, self.blank_symbol)
         if self.use_length:
             args += (chainer.Variable(x_length), chainer.Variable(l_length))
         loss = gram_ctc.gram_ctc(*args, reduce=self.reduce).data
@@ -98,24 +106,29 @@ class GramCTCTestBase(object):
             for t in range(xt.shape[1]):
                 xt[b][t] = numpy.exp(xt[b][t]) / numpy.sum(numpy.exp(xt[b][t]))
         batch_size = xt.shape[0]
-        path_length = 2 * l_length + 1
+        path_length = 3 * l_length + 1
         loss_expect = xp.zeros((batch_size,), dtype=xp.float32)
+
         for i in range(batch_size):
             xtb, lb, xlb, plb = xt[i], self.l[i], x_length[i], path_length[i]
             loss_expect[i] = -math.log(
                 self.alpha(xtb, lb, int(xlb - 1), int(plb - 1)) +
-                self.alpha(xtb, lb, int(xlb - 1), int(plb - 2)))
+                self.alpha(xtb, lb, int(xlb - 1), int(plb - 2)) +
+                self.alpha(xtb, lb, int(xlb - 1), int(plb - 3)))
+            # print(self.alpha(xtb, lb, int(xlb - 1), int(plb - 1)))
+            # print(self.alpha(xtb, lb, int(xlb - 1), int(plb - 2)))
+            # print(self.alpha(xtb, lb, int(xlb - 1), int(plb - 3)))
         if self.reduce == 'mean':
             loss_expect = xp.mean(loss_expect)
         testing.assert_allclose(loss_expect, loss)
 
     def test_forward_cpu(self):
-        self.check_forward(self.t, tuple(self.x),
+        self.check_forward(self.t, self.bigram, tuple(self.x),
                            self.l_length, self.x_length)
 
     @attr.gpu
     def test_forward_gpu(self):
-        self.check_forward(cuda.to_gpu(self.t),
+        self.check_forward(cuda.to_gpu(self.t), cuda.to_gpu(self.bigram),
                            tuple(cuda.to_gpu(x_data) for x_data in self.x),
                            cuda.to_gpu(self.l_length),
                            cuda.to_gpu(self.x_length))
@@ -137,7 +150,7 @@ class GramCTCTestBase(object):
     @condition.retry(3)
     @attr.gpu
     def test_backward_gpu(self):
-        self.check_backward(cuda.to_gpu(self.t),
+        self.check_backward(cuda.to_gpu(self.t), cuda.to_gpu(self.bigram),
                             tuple(cuda.to_gpu(x_data) for x_data in self.x),
                             cuda.to_gpu(self.l_length),
                             cuda.to_gpu(self.x_length),
@@ -208,8 +221,8 @@ class TestCTCWithRepeatedLabel(unittest.TestCase, GramCTCTestBase):
     def setUp(self):
         GramCTCTestBase.setUp(self)
         self.t = numpy.array([[0, 1, 1], [0, 1, 0]]).astype(numpy.int32)
-        self.l = numpy.array([[2, 0, 2, 1, 2, 1, 2],
-                              [2, 0, 2, 1, 2, 0, 2]]).astype(numpy.int32)
+        self.bigram = numpy.array([[-1, 2, 2], [-1, -1, -1]]).astype(numpy.int32)
+        self.l = gram_ctc._label_to_path(self.t, self.bigram, self.blank_symbol, numpy)
         self.l_length = numpy.full((len(self.t),), len(self.t[0]), dtype='i')
 
 
@@ -222,9 +235,10 @@ class TestCTCBlankSymbol(unittest.TestCase, GramCTCTestBase):
     def setUp(self):
         GramCTCTestBase.setUp(self)
         self.x = numpy.random.uniform(-1, 1, (4, 2, 4)).astype(numpy.float32)
-        self.l = numpy.array([[3, 0, -1, 3, 1, -1, 3],
-                              [3, 1, -1, 3, 0, -1, 3]]).astype(numpy.int32)
+        self.t = numpy.array([[0, 1], [1, 0]]).astype(numpy.int32)
+        self.bigram = numpy.array([[-1, 2], [-1, -1]]).astype(numpy.int32)
         self.blank_symbol = 3
+        self.l = gram_ctc._label_to_path(self.t, self.bigram, self.blank_symbol, numpy)
 
 
 class TestCTCUseNoBackpropMode(unittest.TestCase):
@@ -232,10 +246,12 @@ class TestCTCUseNoBackpropMode(unittest.TestCase):
     def test_no_backprop_mode(self):
         xs_data = numpy.random.uniform(-1, 1, (4, 2, 3)).astype(numpy.float32)
         t_data = numpy.array([[0, 1], [1, 0]]).astype(numpy.int32)
+        bigram_data = numpy.array([[-1, -1], [-1, -1]]).astype(numpy.int32)
         with chainer.no_backprop_mode():
             x = [chainer.Variable(x_data) for x_data in xs_data]
             t = chainer.Variable(t_data)
-            gram_ctc.gram_ctc(x, t, 2)
+            bigram = chainer.Variable(bigram_data)
+            gram_ctc.gram_ctc(x, t, bigram, 2)
 
 
 class TestCTCError(unittest.TestCase):
@@ -252,9 +268,9 @@ class TestCTCInvalidReductionOption(unittest.TestCase):
     def test_not_iterable(self):
         x = chainer.Variable(numpy.zeros((4, 2, 3), numpy.float32))
         t = chainer.Variable(numpy.zeros((2, 2), numpy.int32))
+        bigram = chainer.Variable(numpy.zeros((2, 2), numpy.int32))
         with self.assertRaises(ValueError):
-            gram_ctc.gram_ctc(
-                tuple(x), t, 0, reduce='invalid_option')
+            gram_ctc.gram_ctc(tuple(x), t, bigram, 0, reduce='invalid_option')
 
-with chainer.using_config("debug", True):
-    testing.run_module(__name__, __file__)
+numpy.set_printoptions(linewidth=200, precision=4)
+testing.run_module(__name__, __file__)

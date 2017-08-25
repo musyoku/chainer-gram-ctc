@@ -62,7 +62,6 @@ class ConnectionistTemporalClassification(function.Function):
     def __init__(self, blank_symbol, reduce='mean'):
         self.blank_symbol = blank_symbol
         self.zero_padding = -10000000000.0
-        self.zero_padding = -100.0
 
         if reduce not in ('mean', 'no'):
             raise ValueError(

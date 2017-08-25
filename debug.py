@@ -89,13 +89,13 @@ def d():
 	# np.random.seed(0)
 	label_unigram = xp.asarray([
 		[1, 2, 2, 3, 5],
-		[2, 4, 3, 9, 9],
+		[2, 4, 3, 0, 0],
 	], dtype=xp.int32)
 	label_bigram = xp.asarray([
 		[-1, -1, -1, -1, -1],
-		[-1, -1, -1, 9, 9],
+		[-1, -1, -1, 0, 0],
 	], dtype=xp.int32)
-	blank_symbol = 9
+	blank_symbol = 0
 
 	length_unigram = xp.asarray([5, 3], dtype=xp.int32)
 	length_bigram = length_unigram
