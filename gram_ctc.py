@@ -134,8 +134,6 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
 	ignore_mask[:, 1::3] = label_bigram != -1
-	# print(label_bigram)
-	# print(ignore_mask)
 	relation_mat *= ignore_mask[:, None, :]
 	relation_mat *= ignore_mask[..., None]
 
@@ -151,42 +149,18 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 	forward_connection = _create_forward_connection_matrix(label_unigram, label_bigram, path_length, path.shape[1], dtype, xp, zero_padding)
 	prob = xp.empty((len(yseq),) + index.shape, dtype=dtype)
 
-	# print("forward_connection")
-	# print(forward_connection / 100)
-	# print("path")
-	# print(path)
-	# print(offset)
-	# print(path + offset)
-	# print("forward_prob")
-	# print(forward_prob)
-
 	# forward computation.
 	for i, y in enumerate(yseq):
-		# print("y")
-		# print(y)
-		# print("take")
-		# print(xp.take(y, index))
-		# print("plus")
-		# print(forward_prob[:, None, :] + forward_connection)
-		# print("log_dot")
-		# print(_log_dot(forward_prob[:, None, :], forward_connection, xp))
 		# calc forward probability in log scale
 		forward_prob = xp.take(y, index) + _log_dot(forward_prob[:, None, :], forward_connection, xp)
-		# print("forward_prob")
-		# print(forward_prob)
 		prob[i] = forward_prob
 
-	# print(path)
-	# print(_reverse_path(path, path_length, xp))
 	index_rev = offset + _reverse_path(path, path_length, xp)
 
 	# rotate yseq with path_length
 	yseq_rev = _move_inputs(yseq, input_length, xp)[::-1]
 	backward_connection = _create_backward_connection_matrix(_reverse_path(label_unigram, length_unigram, xp), 
 		_reverse_path(label_bigram, length_bigram, xp), path_length, path.shape[1], dtype, xp, zero_padding)
-
-	# print("backward_connection")
-	# print(backward_connection / 100)
 
 	# move to back.
 	prob = _move_inputs(prob, input_length, xp)
@@ -195,24 +169,10 @@ def _compute_transition_probability(yseq, input_length, label_unigram, length_un
 	mod = path.shape[1]
 	backward_prob_index = xp.arange(0, path.size, mod, dtype=np.int32)[:, None] + (xp.arange(mod) - path_length[:, None]) % mod
 	for i, y_rev in enumerate(yseq_rev):
-		# print("log_dot")
-		# print(_log_dot(backward_prob[:, None, :], backward_connection, xp))
 		# calc backward probability
 		backward_prob = _log_dot(backward_prob[:, None, :], backward_connection, xp)
-		# print("backward_prob_index")
-		# print(backward_prob_index)
-		# print("backward_prob[:, ::-1]")
-		# print(backward_prob[:, ::-1])
-		# print("take1")
-		# print(xp.take(backward_prob[:, ::-1], backward_prob_index))
 		prob[-i - 1] += xp.take(backward_prob[:, ::-1], backward_prob_index)
 		backward_prob = xp.take(y_rev, index_rev) + backward_prob
-		# print("index_rev")
-		# print(index_rev)
-		# print("take2")
-		# print(xp.take(y_rev, index_rev))
-		# print("backward_prob")
-		# print(backward_prob)
 
 	# move to front.
 	return _move_inputs(prob, -input_length, xp)
@@ -316,9 +276,6 @@ class GramCTC(function.Function):
 		self.prob_trans = _compute_transition_probability(log_yseq, self.input_length, 
 			label_unigram, length_unigram, label_bigram, length_bigram, self.path, self.path_length, xp, self.zero_padding)
 
-		# print("prob_trans")
-		# print(xp.exp(self.prob_trans))
-		# print(xp.exp(_logsumexp(self.prob_trans[0], xp, axis=1)))
 		loss = -_logsumexp(self.prob_trans[0], xp, axis=1)
 		if self.reduce == 'mean':
 			loss = utils.force_array(xp.mean(loss))
