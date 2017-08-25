@@ -2,7 +2,6 @@
 import collections
 import numpy as np
 import six
-
 import chainer
 from chainer import cuda
 from chainer import function
@@ -88,9 +87,9 @@ def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, 
 	)
 
 	# パスの長さを超える部分は0埋め
-	relation_mat *= (path_length[:, None] > xp.arange(max_length))[..., None]
-	relation_mat *= (path_length[:, None] > xp.arange(max_length))[:, None, :]
-
+	mask = path_length[:, None] > xp.arange(max_length)
+	relation_mat *= mask[..., None]
+	relation_mat *= mask[:, None, :]
 
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
@@ -128,8 +127,9 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 	)
 
 	# パスの長さを超える部分は0埋め
-	relation_mat *= (path_length[:, None] > xp.arange(max_length))[..., None]
-	relation_mat *= (path_length[:, None] > xp.arange(max_length))[:, None, :]
+	mask = path_length[:, None] > xp.arange(max_length)
+	relation_mat *= mask[..., None]
+	relation_mat *= mask[:, None, :]
 
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
