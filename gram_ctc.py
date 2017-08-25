@@ -25,13 +25,11 @@ def _softmax(x, xp):
 def _label_to_path(unigram_labels, bigram_labels, blank_symbol, xp):
 	batchsize = len(unigram_labels)
 	length_unigram = unigram_labels.shape[1]
-	length_bigram = bigram_labels.shape[1]
-	path = xp.full((batchsize, length_unigram * 2 + length_bigram + 2), blank_symbol, dtype=np.int32)
+	path = xp.full((batchsize, length_unigram * 3 + 1), blank_symbol, dtype=np.int32)
 	# unigram
 	path[:, 1::3] = unigram_labels
 	# bigram
-	path[:, 5::3] = bigram_labels
-	path[:, 2] = -1	# ダミーのbigramノード
+	path[:, 2::3] = bigram_labels
 	return path
 
 def _log_dot(prob, connection, xp):
@@ -76,8 +74,8 @@ def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, 
 	repeat_mask_unigram = repeat_mask_unigram[:, None]
 
 	repeat_mask_bigram = xp.ones((batchsize, N))
-	repeat_mask_bigram[:, 5::3] = label_bigram != xp.roll(label_bigram, 2, axis=1)
-	repeat_mask_bigram[:, 5] = 1
+	repeat_mask_bigram[:, 2::3] = label_bigram != xp.roll(label_bigram, 2, axis=1)
+	repeat_mask_bigram[:, 2] = 1
 	repeat_mask_bigram = repeat_mask_bigram[:, None]
 
 	arange_mod = xp.arange(N, dtype=dtype) % dtype(3)
@@ -96,8 +94,7 @@ def _create_forward_connection_matrix(label_unigram, label_bigram, path_length, 
 
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
-	ignore_mask[:, 5::3] = label_bigram != -1
-	ignore_mask[:, 2] = 0
+	ignore_mask[:, 2::3] = label_bigram != -1
 	relation_mat *= ignore_mask[:, None, :]
 	relation_mat *= ignore_mask[..., None]
 	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
@@ -111,10 +108,11 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 	repeat_mask_unigram[:, 2::3] = label_unigram != xp.roll(label_unigram, 1, axis=1)
 	repeat_mask_unigram[:, 2] = 1
 	repeat_mask_unigram = repeat_mask_unigram[:, None]
-
+	
 	repeat_mask_bigram = xp.ones((batchsize, N))
-	repeat_mask_bigram[:, 7::3] = (label_bigram != xp.roll(label_bigram, -2, axis=1))[:, :-1]
-	repeat_mask_bigram[:, -3] = 1
+	repeat_mask_bigram[:, 1::3] = label_bigram != xp.roll(label_bigram, 2, axis=1)
+	repeat_mask_bigram[:, 1] = 1
+	repeat_mask_bigram[:, 4] = 1
 	repeat_mask_bigram = repeat_mask_bigram[:, None]
 
 	arange_mod = xp.arange(N, dtype=dtype) % dtype(3)
@@ -134,8 +132,7 @@ def _create_backward_connection_matrix(label_unigram, label_bigram, path_length,
 
 	# bigramが存在しない場合、そのノードへの接続を全て切る
 	ignore_mask = xp.ones((batchsize, N))
-	ignore_mask[:, 5::3] = label_bigram != -1
-	ignore_mask[xp.arange(batchsize), (path_length - 3)] = False
+	ignore_mask[:, 1::3] = label_bigram != -1
 	relation_mat *= ignore_mask[:, None, :]
 	relation_mat *= ignore_mask[..., None]
 	return _log_matrix(relation_mat, xp, zero_padding).swapaxes(1, 2)
@@ -304,7 +301,7 @@ class GramCTC(function.Function):
 			assert len(xs) >= xp.max(self.input_length)
 			assert len(label_unigram[0]) >= xp.max(length_unigram)
 
-		self.path_length = length_unigram * 2 + 1 + length_bigram
+		self.path_length = length_unigram * 3 + 1
 
 		yseq_shape = (len(xs),) + xs[0].shape
 		self.yseq = _softmax(xp.vstack(xs).reshape(yseq_shape), xp)
@@ -345,7 +342,7 @@ def gram_ctc(xs, label_unigram, label_bigram, blank_symbol, input_length=None, l
 	assert blank_symbol >= 0
 	assert blank_symbol < xs[0].shape[1]
 	assert len(xs[0].shape) == 2
-	assert label_unigram.shape[1] == label_bigram.shape[1] + 1
+	assert label_unigram.shape[1] == label_bigram.shape[1]
 
 	if input_length is None:
 		xp = cuda.get_array_module(xs[0].data)

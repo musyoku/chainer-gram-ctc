@@ -31,16 +31,16 @@ def b():
 		[2, 4, 3, 0, 0, 0],
 	], dtype=xp.int32)
 	label_bigram = xp.asarray([
-		[5, 6, 8, 7, 0],
-		[6, 9, 0, 0, 0],
+		[-1, -1, -1, -1, -1, 0],
+		[-1, 6, 9, 0, 0, 0],
 	], dtype=xp.int32)
 	blank_symbol = 0
 	path = gram_ctc._label_to_path(label_unigram, label_bigram, blank_symbol, xp)
 	print(path)
 
 	length_unigram = xp.asarray([5, 3])
-	length_bigram = length_unigram - 1
-	path_length = length_unigram * 2 + length_bigram + 2
+	length_bigram = length_unigram
+	path_length = length_unigram * 3 + 1
 
 	relation_mat = gram_ctc._create_forward_connection_matrix(label_unigram, label_bigram, path_length, path.shape[1], xp.float32, xp, zero_padding=-5)
 	relation_mat = gram_ctc._create_backward_connection_matrix(gram_ctc._reverse_path(label_unigram, length_unigram, xp), gram_ctc._reverse_path(label_bigram, length_bigram, xp), path_length, path.shape[1], xp.float32, xp, zero_padding=-5)
@@ -91,8 +91,8 @@ def d():
 		[2, 4, 3, 0, 0],
 	], dtype=np.int32)
 	label_bigram = np.asarray([
-		[-1, -1, -1, -1],
-		[-1, -1, 0, 0],
+		[-1, -1, -1, -1, -1],
+		[-1, -1, -1, 0, 0],
 	], dtype=np.int32)
 	blank_symbol = 0
 
